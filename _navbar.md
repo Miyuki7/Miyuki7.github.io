@@ -60,7 +60,7 @@
   - [**为知笔记**](https://www.wiz.cn/)
   - [**语 雀**](https://www.yuque.com/)
 - 划水必备
-  - [**0x00000001**](https://www.bilibili.com/)
+  - [**哔哩哔哩**](https://www.bilibili.com/)
   - [**0x00000002**](https://mo.fish/)
   - [**0x00000003**](http://www.mazegenerator.net/)
   - [**0x00000004**](https://duomoyu.com/)
