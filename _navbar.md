@@ -78,6 +78,7 @@
   - [**0x00000010**](https://www.dgtle.com/)
   - [**0x00000011**](https://sspai.com/)
 - 在线技术文档
+  - **[Linux命令大全](https://www.linuxcool.com/)**
   - [**Git中文教程**](https://git-scm.com/book/zh/v2)
   - [**SVN中文手册**](http://svnbook.red-bean.com/nightly/zh/index.html)
   - [**jQuery API中文文档**](https://jquery.cuishifeng.cn/)
