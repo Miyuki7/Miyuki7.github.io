@@ -1,3 +1,5 @@
+
+
 作者：是瑶瑶公主呀
 链接：https://www.nowcoder.com/discuss/481089?type=5
 来源：牛客网
@@ -1740,6 +1742,58 @@ public DiscussPost findDiscussPostById(int id) {
 在 `discuss-detail.html` 取出 Model 对象存放的数据绑定到对应组件显示。
 
 ------
+
+### 事务管理
+
+![image-20221110185337710](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221110185337710.png)
+
+在AlphaController中添加两个测试方法。
+
+* 声明型事务（设置隔离级别和传播行为）
+
+  ![image-20221110190642619](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221110190642619.png)
+
+* 编程式事务(通过transactionTemplate或TransactionManager来实现)
+
+  ``` java
+  public Object save2() {
+          transactionTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+          transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+  
+          return transactionTemplate.execute(new TransactionCallback<Object>() {
+              @Override
+              public Object doInTransaction(TransactionStatus status) {
+                  // 新增用户
+                  User user = new User();
+                  user.setUsername("beta");
+                  user.setSalt(CommunityUtil.generateUUID().substring(0, 5));
+                  user.setPassword(CommunityUtil.md5("123" + user.getSalt()));
+                  user.setEmail("beta@qq.com");
+                  user.setHeaderUrl("http://image.nowcoder.com/head/999t.png");
+                  user.setCreateTime(new Date());
+                  userMapper.insertUser(user);
+  
+                  // 新增帖子
+                  DiscussPost post = new DiscussPost();
+                  post.setUserId(user.getId());
+                  post.setTitle("你好");
+                  post.setContent("我是新人!");
+                  post.setCreateTime(new Date());
+                  discussPostMapper.insertDiscussPost(post);
+  
+                  Integer.valueOf("abc");
+  
+                  return "ok";
+              }
+          });
+      }
+  ```
+
+  
+
+------
+
+
 
 ### 显示评论（comment 表）
 
