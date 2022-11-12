@@ -1,11 +1,3 @@
-
-
-作者：是瑶瑶公主呀
-链接：https://www.nowcoder.com/discuss/481089?type=5
-来源：牛客网
-
-
-
 ## 1.数据库表
 
 #### 用户表 user
@@ -1797,34 +1789,99 @@ public DiscussPost findDiscussPostById(int id) {
 
 ### 显示评论（comment 表）
 
+![image-20221111151434355](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221111151434355.png)
+
 创建 comment 表对应的实体类 Comment。
 
 创建 CommentMapper 接口
 
 - 新增 `selectCommentsByEntity` 方法，根据实体查询一页的评论数据。 
+
 - 新增 `selectCountByEntity` 方法，根据实体查询评论的数量。 
+
 - 在 `comment-mapper.xml` 配置 select 语句。 
+
+  ``` java
+  <select id="selectCommentsByEntity" resultType="com.nowcoder.community.entity.Comment">
+          select <include refid="selectFields"></include>
+          from comment
+          where status = 0
+          and entity_type = #{entityType}
+          and entity_id = #{entityId}
+          order by create_time asc
+          limit #{offset}, #{limit}
+      </select>
+  
+      <select id="selectCountByEntity" resultType="int">
+          select count(id)
+          from comment
+          where status = 0
+          and entity_type = #{entityType}
+          and entity_id = #{entityId}
+      </select>
+  ```
+
+  
 
 创建 CommentService 类
 
 - 新增 `findCommentByEntity` 方法，调用 CommentMapper 的 `selectCommentByEntity` 方法。 
+
 - 新增 `findCommentCount` 方法，调用 CommentMapper 的 `selectCountByEntity` 方法。 
 
-在 DiscussPostController 的 `getDiscussPost` 方法中增加查询帖子评论和回复的逻辑，将结果存储在 Model 对象。
+  ``` java
+  public List<Comment> findCommentsByEntity(int entityType, int entityId, int offset, int limit) {
+          return commentMapper.selectCommentsByEntity(entityType, entityId, offset, limit);
+      }
+  
+      public int findCommentCount(int entityType, int entityId) {
+          return commentMapper.selectCountByEntity(entityType, entityId);
+      }
+  ```
 
-【问题】sql 的 xml 文件中绑定参数时，应传入实体类属性名，拼错成数据库字段名（entityId 写成 entity_id）。
+  
+
+在 DiscussPostController 的 `getDiscussPost` 方法中增加查询帖子评论和回复的逻辑，将结果存储在 Model 对象。(嵌套查询，组装成list集合，这里没有创建真正的vo对象)
 
 ------
 
 ### 添加评论
 
+![image-20221111153925155](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221111153925155.png)
+
+**注意事务管理，增加评论和更新贴子要在一个事务里**
+
 在 CommentMapper 接口新增 `insertComment` 方法，添加评论数据，在 `comment-mapper` 配置对应 sql。
 
-在 DiscussPostMapper 接口新增 `updateCommentCount` 方法，增加评论数量，在 `discusspost-mapper` 配置对应 sql。
+在 DiscussPostMapper 接口新增 `updateCommentCount` 方法，增加评论数量，在 `discusspost-mapper` 配置对应 sql。（DiscussPost表中有冗余字段，冗余了commentcount字段，可以直接查出评论数量）
 
 在 DiscussPostService 类新增 `updateCommentCount` 方法，调用 DiscussPostMapper 的 `updateCommentCount` 方法。
 
 在 CommentService 类新增 `addComment` 方法，调用 CommentMapper 的 `insertComment` 新增评论，并调用 DiscussPostService 的 `updateCommentCount` 更新评论数量，使用 `@Transactional` 注解保证事务。
+
+``` java
+@Transactional(isolation = Isolation.READ_COMMITTED, propagation = Propagation.REQUIRED)
+    public int addComment(Comment comment) {
+        if (comment == null) {
+            throw new IllegalArgumentException("参数不能为空!");
+        }
+
+        // 添加评论
+        comment.setContent(HtmlUtils.htmlEscape(comment.getContent()));
+        comment.setContent(sensitiveFilter.filter(comment.getContent()));
+        int rows = commentMapper.insertComment(comment);
+
+        // 更新帖子评论数量
+        if (comment.getEntityType() == ENTITY_TYPE_POST) {
+            int count = commentMapper.selectCountByEntity(comment.getEntityType(), comment.getEntityId());
+            discussPostService.updateCommentCount(comment.getEntityId(), count);
+        }
+
+        return rows;
+    }
+```
+
+
 
 创建 CommentController 类，新增 `addComment` 方法，从 hostHolder 获取用户信息，然后调用 CommentService 的 `addComment` 方法添加评论。
 
@@ -1834,54 +1891,535 @@ public DiscussPost findDiscussPostById(int id) {
 
 ### 显示私信列表 （message 表）
 
+![image-20221111162234346](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221111162234346.png)
+
 创建对应 message 表的实体类 Message。
 
+| 字段            | 类型      | 备注                                                         |
+| --------------- | --------- | ------------------------------------------------------------ |
+| id              | int       | 主键、自增                                                   |
+| from_id         | int       | 发消息的 id，创建索引（id时一表示系统消息）                  |
+| to_id           | int       | 收消息的 id，创建索引                                        |
+| conversation_id | varchar   | 会话 id，由通信双方 id 拼接，创建索引 （总是小在前大在后；例如101_102方便统计） |
+| content         | text      | 消息内容                                                     |
+| status          | int       | 消息状态：0 未读、1 已读、2 删除                             |
+| create_time     | timestamp | 消息发送时间                                                 |
+
 创建 MessageMapper 接口，增加查询会话列表、会话数量、私信列表、私信数量、未读私信数量等方法，在 `message-mapper.xml` 中配置对应的 sql。
+
+``` java
+<select id="selectConversations" resultType="com.nowcoder.community.entity.Message">
+        select <include refid="selectFields"></include>
+        from message
+        where id in (
+            select max(id) from message
+            where status != 2
+            and from_id != 1
+            and (from_id = #{userId} or to_id = #{userId})
+            group by conversation_id
+        )
+        order by id desc
+        limit #{offset}, #{limit}
+    </select>
+
+    <select id="selectConversationCount" resultType="int">
+        select count(m.maxid) from (
+            select max(id) as maxid from message
+            where status != 2
+            and from_id != 1
+            and (from_id = #{userId} or to_id = #{userId})
+            group by conversation_id
+        ) as m
+    </select>
+
+    <select id="selectLetters" resultType="com.nowcoder.community.entity.Message">
+        select <include refid="selectFields"></include>
+        from message
+        where status != 2
+        and from_id != 1
+        and conversation_id = #{conversationId}
+        order by id desc
+        limit #{offset}, #{limit}
+    </select>
+
+    <select id="selectLetterCount" resultType="int">
+        select count(id)
+        from message
+        where status != 2
+        and from_id != 1
+        and conversation_id = #{conversationId}
+    </select>
+
+    <select id="selectLetterUnreadCount" resultType="int">
+        select count(id)
+        from message
+        where status = 0
+        and from_id != 1
+        and to_id = #{userId}
+        <if test="conversationId!=null">
+            and conversation_id = #{conversationId}
+        </if>
+    </select>
+```
+
+
 
 创建 MessageService，调用 MessageMapper 中的方法。
 
 创建 MessgaeController
 
 - 新增 `getLetterList` 方法，将会话列表信息存储到 Model 对象，返回 `letter` 视图。 
+
+  ```java
+  // 私信列表
+  @RequestMapping(path = "/letter/list", method = RequestMethod.GET)
+  public String getLetterList(Model model, Page page) {
+      User user = hostHolder.getUser();
+      // 分页信息
+      page.setLimit(5);
+      page.setPath("/letter/list");
+      page.setRows(messageService.findConversationCount(user.getId()));
+  
+      // 会话列表
+      List<Message> conversationList = messageService.findConversations(
+              user.getId(), page.getOffset(), page.getLimit());
+      List<Map<String, Object>> conversations = new ArrayList<>();
+      if (conversationList != null) {
+          for (Message message : conversationList) {
+              Map<String, Object> map = new HashMap<>();
+              map.put("conversation", message);
+              map.put("letterCount", messageService.findLetterCount(message.getConversationId()));
+              map.put("unreadCount", messageService.findLetterUnreadCount(user.getId(), message.getConversationId()));
+              int targetId = user.getId() == message.getFromId() ? message.getToId() : message.getFromId();
+              map.put("target", userService.findUserById(targetId));
+  
+              conversations.add(map);
+          }
+      }
+      model.addAttribute("conversations", conversations);
+  
+      // 查询未读消息数量
+      int letterUnreadCount = messageService.findLetterUnreadCount(user.getId(), null);
+      model.addAttribute("letterUnreadCount", letterUnreadCount);
+      int noticeUnreadCount = messageService.findNoticeUnreadCount(user.getId(), null);
+      model.addAttribute("noticeUnreadCount", noticeUnreadCount);
+  
+      return "/site/letter";
+  }
+  ```
+
 - 新增 `getLetterDetail` 方法，将每个会话具体的私信信息存储到 Model 对象，返回 `letter-datail` 视图。 
+
+  ```java
+  @RequestMapping(path = "/letter/detail/{conversationId}", method = RequestMethod.GET)
+  public String getLetterDetail(@PathVariable("conversationId") String conversationId, Page page, Model model) {
+      // 分页信息
+      page.setLimit(5);
+      page.setPath("/letter/detail/" + conversationId);
+      page.setRows(messageService.findLetterCount(conversationId));
+  
+      // 私信列表
+      List<Message> letterList = messageService.findLetters(conversationId, page.getOffset(), page.getLimit());
+      List<Map<String, Object>> letters = new ArrayList<>();
+      if (letterList != null) {
+          for (Message message : letterList) {
+              Map<String, Object> map = new HashMap<>();
+              map.put("letter", message);
+              map.put("fromUser", userService.findUserById(message.getFromId()));
+              letters.add(map);
+          }
+      }
+      model.addAttribute("letters", letters);
+  
+      // 私信目标
+      model.addAttribute("target", getLetterTarget(conversationId));
+  
+      // 设置已读
+      List<Integer> ids = getLetterIds(letterList);
+      if (!ids.isEmpty()) {
+          messageService.readMessage(ids);
+      }
+  
+      return "/site/letter-detail";
+  }
+  
+  private User getLetterTarget(String conversationId) {
+      String[] ids = conversationId.split("_");
+      int id0 = Integer.parseInt(ids[0]);
+      int id1 = Integer.parseInt(ids[1]);
+  
+      if (hostHolder.getUser().getId() == id0) {
+          return userService.findUserById(id1);
+      } else {
+          return userService.findUserById(id0);
+      }
+  }
+  ```
 
 ------
 
 ### 发送私信
 
+![image-20221111181545689](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221111181545689.png)
+
 在 MessageMapper 
 
 - 新增 `insertMessage` 方法插入私信记录，在 `message-mapper.xml`  配置 insert 语句。 
+
 - 新增 `updateMessgae` 方法修改私信状态，在 `message-mapper.xml`  配置 update 语句，利用 foreach 动态 sql。 
+
+  ```xml
+  <insert id="insertMessage" parameterType="com.nowcoder.community.entity.Message" keyProperty="id">
+      insert into message(<include refid="insertFields"></include>)
+      values(#{fromId},#{toId},#{conversationId},#{content},#{status},#{createTime})
+  </insert>
+  //foreach动态拼接sql
+  <update id="updateStatus">
+      update message set status = #{status}
+      where id in
+      <foreach collection="ids" item="id" open="(" separator="," close=")">
+          #{id}
+      </foreach>
+  </update>
+  ```
 
 在 MessageService
 
 - 新增 `addMessage` 发送私信方法，过滤敏感词后，调用 MessageMapper 的 `insertMessage` 。
+
 - 新增 `readMessage` 方法读取信息，调用MessageMapper 的 `updateMessgae` 更新私信的状态为 1。
+
+  ```java
+  public int addMessage(Message message) {
+      message.setContent(HtmlUtils.htmlEscape(message.getContent()));
+      message.setContent(sensitiveFilter.filter(message.getContent()));
+      return messageMapper.insertMessage(message);
+  }
+  
+  public int readMessage(List<Integer> ids) {
+      return messageMapper.updateStatus(ids, 1);
+  }
+  ```
 
 在 MessageController 
 
 - 新增 `getLetterIds` 方法，将私信集合中未读私信的 id 添加到 List 集合并返回，在 `getLetterDetail` 方法调用该方法设置已读。
+
+  ```java
+  private List<Integer> getLetterIds(List<Message> letterList) {
+      List<Integer> ids = new ArrayList<>();
+  
+      if (letterList != null) {
+          for (Message message : letterList) {
+              //只有该用户是消息接收者时后才会改变该消息的状态
+              if (hostHolder.getUser().getId() == message.getToId() && message.getStatus() == 0) {
+                  ids.add(message.getId());
+              }
+          }
+      }
+      return ids;
+  }
+  ```
+
 - 新增 `sendLetter` 发送私信方法，设置私信信息后调用 MessageService 的 `addMessage` 发送。
+
+- ```java
+  @RequestMapping(path = "/letter/send", method = RequestMethod.POST)
+  @ResponseBody
+  public String sendLetter(String toName, String content) {
+      User target = userService.findUserByName(toName);
+      if (target == null) {
+          return CommunityUtil.getJSONString(1, "目标用户不存在!");
+      }
+      Message message = new Message();
+      message.setFromId(hostHolder.getUser().getId());
+      message.setToId(target.getId());
+      //将ConversationId始终设置成前小后大  101_102
+      if (message.getFromId() < message.getToId()) {
+          message.setConversationId(message.getFromId() + "_" + message.getToId());
+      } else {
+          message.setConversationId(message.getToId() + "_" + message.getFromId());
+      }
+      message.setContent(content);
+      message.setCreateTime(new Date());
+      messageService.addMessage(message);
+      return CommunityUtil.getJSONString(0);
+  }
+  ```
 
 ------
 
 ### 统一异常处理
 
+![image-20221111184406175](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221111184406175.png)
+
 在 HomeController 中增加 `getErrorPage` 方法，返回错误页面。
+
+``` java
+@RequestMapping(path = "/error", method = RequestMethod.GET)
+    public String getErrorPage() {
+        return "/error/500";
+    }
+```
+
+
 
 创建 ExceptionAdvice 类
 
 - 加上 `@ControllerAdvice` 注解，表示该类是 Controller 的全局配置类。 
+
 - 创建 `handleException` 方法，加上 `@ExceptionHandler` 注解，该方法在 Controller 出现异常后调用，处理捕获异常。如果是异步请求返回一个 JSON 数据，否则重定向至 HomeController 的 `getErrorPage` 方法。 
+
+  ``` java
+  @ControllerAdvice(annotations = Controller.class)
+  public class ExceptionAdvice {
+  
+      private static final Logger logger = LoggerFactory.getLogger(ExceptionAdvice.class);
+  
+      @ExceptionHandler({Exception.class})
+      public void handleException(Exception e, HttpServletRequest request, HttpServletResponse response) throws IOException {
+          logger.error("服务器发生异常: " + e.getMessage());
+          for (StackTraceElement element : e.getStackTrace()) {
+              logger.error(element.toString());
+          }
+  
+          String xRequestedWith = request.getHeader("x-requested-with");
+          if ("XMLHttpRequest".equals(xRequestedWith)) {
+              response.setContentType("application/plain;charset=utf-8");
+              PrintWriter writer = response.getWriter();
+              writer.write(CommunityUtil.getJSONString(1, "服务器异常!"));
+          } else {
+              response.sendRedirect(request.getContextPath() + "/error");
+          }
+      }
+  
+  }
+  ```
+
+  
 
 ------
 
 ### 统一日志处理
 
+![image-20221112164827045](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112164827045.png)
+
+![image-20221112165024302](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112165024302.png)
+
+![image-20221112165047921](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112165047921.png)
+
+![image-20221112165421373](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112165421373.png)
+
+![image-20221112165644604](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112165644604.png)
+
+service层，记录业务日志
+
+
+
 在 `pom.xml` 引入 aspectj 的依赖。
 
 创建 ServiceLogAspect 类，添加 `@Aspect` 切面注解，配置切入点表达式，拦截所有 service 包下的方法，利用 `@Before` 记录日志。
+
+```java
+public class ServiceLogAspect {
+
+    private static final Logger logger = LoggerFactory.getLogger(ServiceLogAspect.class);
+
+    @Pointcut("execution(* com.nowcoder.community.service.*.*(..))")
+    public void pointcut() {
+
+    }
+
+    @Before("pointcut()")
+    public void before(JoinPoint joinPoint) {
+        // 用户[1.2.3.4],在[xxx],访问了[com.nowcoder.community.service.xxx()].
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return;
+        }
+        HttpServletRequest request = attributes.getRequest();
+        String ip = request.getRemoteHost();
+        String now = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+        String target = joinPoint.getSignature().getDeclaringTypeName() + "." + joinPoint.getSignature().getName();
+        logger.info(String.format("用户[%s],在[%s],访问了[%s].", ip, now, target));
+    }
+
+}
+```
+
+## 6.Redis
+
+### 点赞
+
+![image-20221112172850769](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112172850769.png)
+
+[通用点赞设计思路 - 掘金 (juejin.cn)](https://juejin.cn/post/6844903722066116621) 
+
+[如何设计微博点赞功能数据库？_51CTO博客_点赞 数据库设计](https://blog.51cto.com/lxw1844912514/5687288) 
+
+[新浪微博「点赞功能」数据库如何设计的？ - 知乎 (zhihu.com)](https://www.zhihu.com/question/63947513)可以参考，业务要求少的话用set就行（只存一个userid），业务要求多的话用hash或者zset（要存类似于时间呀等等）。
+
+点赞作为一个高频率的操作，如果每次操作都读写数据库会增加数据库的压力，所以采用缓存+定时任务来实现。点赞数据是在redis中缓存半小时，同时定时任务是每隔5分钟执行一次，做持久化存储，这里的缓存时间和任务执行时间可根据项目情况而定。
+
+创建 RedisKeyUtil 工具类
+
+- 定义分隔符 `:` 以及实体获得赞的 key 前缀常量 `like:entity`。
+- 新增 `getEntityLikeKey(int entityType,int entityId)` 方法，通过实体类型和实体 id 生成对应实体获得赞的 key。
+
+创建业务层的 LikeService 类
+
+- 注入 RedisTemplate 实例。
+- 新增 `like` 点赞方法，首先通过 RedisKeyUtil 工具类的 `getEntityLikeKey` 方法获得实体点赞的 key，然后通过 RedisTemplate 对象对 set 集合的 `isMember` 方法查询 userId 是否存在于对应 key 的 set 集合中，如果存在则移除出点赞的用户集合，如果不存在则添加到点赞的用户集合。
+- 新增 `findEntityLikeCount` 方法查询实体的点赞数量，通过调用 set 集合的 `size` 方法查询元素个数。
+- 新增 `findEntityLikeStatus` 方法查询某用户对某实体的点赞状态，逻辑如 `like` 方法，通过 set 集合的 `isMember` 方法实现。
+
+创建表现层的 LikeController 类
+
+- 注入 LikeService 和 HostHolder 实例。
+- 新增 `like` 点赞方法，调用业务层的 `like` 方法进行点赞、调用 `findEntityLikeCount` 和 `findEntityLikeStatus` 查询点赞数量和点赞状态，封装到 map 集合，然后通过工具类封装成 JSON 数据返回。
+
+（更新首页帖子点赞数量）在表现层的 HomeController 类
+
+- 注入 LikeService 实例。
+- 在 `getIndexPage` 方法在通过 LikeService 类的方法获得点赞数量，存储到 map 集合。
+
+------
+
+### 收到的赞
+
+对点赞功能进行重构
+
+在 RedisUnitl 工具类
+
+- 新增用户获得赞 key 的前缀常量 `like:user`
+- 新增 `getUserLikeKey(int userId)` 方法，通过用户 id 生成对应用户获得赞的 key。
+
+在 LikeService 中
+
+- 重构 `like` 方法，在参数列表中加入 entityUserId 表示被点赞用户的 id，用来更新用户的被点赞数量。
+  - 通过 RedisTemplate 对象的 `execute` 方法实现事务，保证被点赞用户点和点赞用户的数据更新一致。通过 `isMember` 方法查询用户的点赞状态，之后通过 `mutli` 方法开启事务。
+  - 当用户已点赞时，调用 `remove` 方法将当前用户从点赞用户的集合中移除，调用 `decrement` 方法将被点赞用户的被点赞数减 1；当用户未点赞时，调用 `add` 方法将当前用户添加到点赞用户的集合，调用 `increment` 方法将被点赞用户的被点赞数加 1。
+- 增加 `findUserLikeCount` 方法，以用户 id 作为 key，调用 `get` 方法查询用户所获得的点赞数。
+
+在 LikeController 中给 `like` 方法增加 entityUserId 参数即可。
+
+------
+
+### 关注
+
+在 RedisUnitl 工具类
+
+- 新增用户关注实体（帖子、评论、用户等）和粉丝（用户）的前缀常量 `followee` 和 `follower`
+- 新增 `getFolloweeKey(int userId, int entityType)` 方法，通过用户 id 和实体类型生成用户关注实体的 key。
+- 新增 `getFollowerKey(int entityType, int entityId)` 方法，通过实体类型和实体 id 生成实体用户粉丝的 key。
+
+创建业务层的 FollowService 类
+
+- 新增
+
+   
+
+  ```
+  follow
+  ```
+
+   
+
+  方法，当用户关注某实体时，
+
+  - 调用 `add` 方法将当前实体 id 和时间作为 value 和 score加入用户的关注集合。
+  - 调用 `add` 方法将当前用户 id 和时间作为 value 和 score 加入实体的粉丝集合。
+
+- 新增
+
+   
+
+  ```
+  unfollow
+  ```
+
+   
+
+  方法，当用户取消关注某实体时，
+
+  - 调用 `remove` 方法将当前实体从用户的关注集合移除。
+  - 调用 `remove` 方法将用户从实体的粉丝集合移除。
+
+------
+
+### 个人主页
+
+在业务层的 FollowService 类
+
+- 新增 `findFolloweeCount` 方法，调用 zset 的 `zcard` 方法查询某用户关注的实体数量。
+- 新增 `findFollowerCount` 方法，调用 zset 的 `zcard` 方法查询某实体的粉丝数量。
+- 新增 `hasFollowed` 方法，根据 zset 的 `zscore` 方法返回值查询当前用户是否关注某实体。
+
+在 UserController 中新增 `getProfilePage` 方法获取个人主页。
+
+- 调用 LikeService 的 `findUserLikeCount` 查询用户获赞数，并添加到 Model 中。
+- 调用 FollowService 的`findFolloweeCount`、`findFollowerCount` 、`hasFollowed` 方法分别查询关注数量、粉丝数量、用户是否关注三项信息并添加到 Model 对象中存储。
+
+------
+
+### 关注列表和粉丝列表
+
+在业务层的 FollowService 类
+
+- 新增 `findFollowees` 方法，查询用户关注列表，主要通过 zset 的 `reverseRange` 获取 value 即关注用户的 userId，再查询出其 user，之后通过 `score` 获取关注时间，存入 map 集合，将 map 添加到 list 列表返回。
+- 新增 `findFollowers` 方法，查询用户粉丝列表，主要通过 zset 的 `reverseRange` 获取 value 即粉丝的 userId，再查询出其 user，之后通过 `score` 获取关注时间，存入 map 集合，将 map 添加到 list 列表返回。
+
+在表现层的 FollowController 类
+
+- 新增 `getFollowees` 方法，获取关注列表，存入 Model 对象。
+- 新增 `getFollowers` 方法，获取粉丝列表，存入 Model 对象。
+
+------
+
+### 优化登录模块
+
+**存储验证码**
+
+在 RedisUntil 工具类
+
+- 新增验证码前缀常量 `kaptcha`
+- 新增 `getKaptchaKey` 方法，通过一个用户凭证（由于未登录，利用 cookie 实现）获得对应验证码的 key 值（利用 string 存储验证码）。
+
+在表现层的 LoginController 类
+
+- 重构 `getKaptcha` 方法，将验证码存入 redis，key 值是当前随机生成的一个字符串，同时将该字符串存入 cookie。
+- 重构 `login` 方法，从 cookie 中获得随机字符串，生成验证码的 key 值，然后获取对应的 value 值即验证码。
+
+------
+
+**存储登录凭证**
+
+在 RedisUntil 工具类
+
+- 新增登录凭证前缀常量 `ticket`
+- 新增 `getTicketKey` 方法，通过字符串获得登录凭证的对应 key 值（利用 string 存储）。
+
+在业务层的 UserService 类
+
+- 重构 `login` 方法，将登录凭证存入 redis 中。
+- 重构 `logout` 方法，先从 redis 中获取登录凭证对象，将状态设为无效再重新存储进 redis。
+- 重构 `findLoginTicket` 方法，根据 ticket 字符串获得对应登录凭证的 key，然后从 redis 查询登录凭证。
+
+------
+
+**缓存用户信息**
+
+在 RedisUntil 工具类
+
+- 新增用户前缀常量 `user`
+- 新增 `getUserKey` 方法，通过用户 id 获得用户的对应 key 值（利用 string 存储）。
+
+在业务层的 UserService 类
+
+- 新增 `getCache`，从缓存获取用户信息。
+- 新增 `initCache`，从 MySQL 查询用户信息并存入 redis。
+- 新增 `clearCache`，用户信息变更（更新头像，激活）时清除缓存。
+- 重构 `findUserById` 方法，首先调用 `getCache`从缓存获取用户信息，如果获取为 null 则调用 `initCache`。
 
 ## 项目优化
 
