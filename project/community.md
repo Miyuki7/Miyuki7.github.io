@@ -44,6 +44,8 @@
 
 #### 用户登录凭证表 login_ticket
 
+后续作废，将token存入redis中
+
 | 字段    | 类型      | 备注                     |
 | ------- | --------- | ------------------------ |
 | id      | int       | 主键、自增               |
@@ -54,17 +56,19 @@
 
 #### 消息表 message
 
-| 字段            | 类型      | 备注                                  |
-| --------------- | --------- | ------------------------------------- |
-| id              | int       | 主键、自增                            |
-| from_id         | int       | 发消息的 id，创建索引                 |
-| to_id           | int       | 收消息的 id，创建索引                 |
-| conversation_id | varchar   | 会话 id，由通信双方 id 拼接，创建索引 |
-| content         | text      | 消息内容                              |
-| status          | int       | 消息状态：0 未读、1 已读、2 删除      |
-| create_time     | timestamp | 消息发送时间                          |
+| 字段            | 类型      | 备注                                                         |
+| --------------- | --------- | ------------------------------------------------------------ |
+| id              | int       | 主键、自增                                                   |
+| from_id         | int       | 发消息的 id，创建索引，1代表系统信息                         |
+| to_id           | int       | 收消息的 id，创建索引                                        |
+| conversation_id | varchar   | 会话 id，由通信双方 id 拼接，创建索引，如果是系统消息，该字段存储的是comment或者like或者关注 |
+| content         | text      | 消息内容，不是系统消息的话存储的是具体内容，是系统消息的话，存一条json数据，详情看下图 |
+| status          | int       | 消息状态：0 未读、1 已读、2 删除                             |
+| create_time     | timestamp | 消息发送时间                                                 |
 
+![image-20221113113911288](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113113911288.png)
 
+![image-20221113114107362](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113114107362.png)
 
 ## 2.搭建基本环境
 
@@ -2259,24 +2263,113 @@ public class ServiceLogAspect {
 
 [新浪微博「点赞功能」数据库如何设计的？ - 知乎 (zhihu.com)](https://www.zhihu.com/question/63947513)可以参考，业务要求少的话用set就行（只存一个userid），业务要求多的话用hash或者zset（要存类似于时间呀等等）。
 
-点赞作为一个高频率的操作，如果每次操作都读写数据库会增加数据库的压力，所以采用缓存+定时任务来实现。点赞数据是在redis中缓存半小时，同时定时任务是每隔5分钟执行一次，做持久化存储，这里的缓存时间和任务执行时间可根据项目情况而定。
+点赞作为一个高频率的操作，如果每次操作都读写数据库会增加数据库的压力，所以采用缓存+定时任务来实现。点赞数据是在redis中缓存半小时，同时定时任务是每隔5分钟执行一次，做持久化存储，这里的缓存时间和任务执行时间可根据项目情况而定。还可以用到前端动画，显示加一，然后在改动redis，减少一次查询，像b站一样，你下拉刷新那时候在真正的查询。
 
 创建 RedisKeyUtil 工具类
 
-- 定义分隔符 `:` 以及实体获得赞的 key 前缀常量 `like:entity`。
+- 定义分隔符 `:` 以及实体获得赞的 key 前缀常量 `like:entity`（set实现）。
+
 - 新增 `getEntityLikeKey(int entityType,int entityId)` 方法，通过实体类型和实体 id 生成对应实体获得赞的 key。
+
+  ![image-20221112181151985](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112181151985.png)
 
 创建业务层的 LikeService 类
 
 - 注入 RedisTemplate 实例。
+
 - 新增 `like` 点赞方法，首先通过 RedisKeyUtil 工具类的 `getEntityLikeKey` 方法获得实体点赞的 key，然后通过 RedisTemplate 对象对 set 集合的 `isMember` 方法查询 userId 是否存在于对应 key 的 set 集合中，如果存在则移除出点赞的用户集合，如果不存在则添加到点赞的用户集合。
+
+  ```java
+  public void like(int userId, int entityType, int entityId, int entityUserId) {
+      redisTemplate.execute(new SessionCallback() {
+          @Override
+          public Object execute(RedisOperations operations) throws DataAccessException {
+              String entityLikeKey = RedisKeyUtil.getEntityLikeKey(entityType, entityId);
+              String userLikeKey = RedisKeyUtil.getUserLikeKey(entityUserId);
+  
+              boolean isMember = operations.opsForSet().isMember(entityLikeKey, userId);
+  
+              operations.multi();
+  
+              if (isMember) {
+                  operations.opsForSet().remove(entityLikeKey, userId);
+                  operations.opsForValue().decrement(userLikeKey);
+              } else {
+                  operations.opsForSet().add(entityLikeKey, userId);
+                  operations.opsForValue().increment(userLikeKey);
+              }
+  
+              return operations.exec();
+          }
+      });
+  }
+  ```
+
 - 新增 `findEntityLikeCount` 方法查询实体的点赞数量，通过调用 set 集合的 `size` 方法查询元素个数。
+
+  ```java
+  // 查询某实体点赞的数量
+  public long findEntityLikeCount(int entityType, int entityId) {
+      String entityLikeKey = RedisKeyUtil.getEntityLikeKey(entityType, entityId);
+      return redisTemplate.opsForSet().size(entityLikeKey);
+  }
+  ```
+
 - 新增 `findEntityLikeStatus` 方法查询某用户对某实体的点赞状态，逻辑如 `like` 方法，通过 set 集合的 `isMember` 方法实现。
+
+- ```java
+  // 查询某人对某实体的点赞状态 0代表没点，1代表点了
+  public int findEntityLikeStatus(int userId, int entityType, int entityId) {
+      String entityLikeKey = RedisKeyUtil.getEntityLikeKey(entityType, entityId);
+      return redisTemplate.opsForSet().isMember(entityLikeKey, userId) ? 1 : 0;
+  }
+  ```
 
 创建表现层的 LikeController 类
 
 - 注入 LikeService 和 HostHolder 实例。
-- 新增 `like` 点赞方法，调用业务层的 `like` 方法进行点赞、调用 `findEntityLikeCount` 和 `findEntityLikeStatus` 查询点赞数量和点赞状态，封装到 map 集合，然后通过工具类封装成 JSON 数据返回。
+
+- 新增 `like` 点赞方法，调用业务层的 `like` 方法进行点赞、调用 `findEntityLikeCount` 和 `findEntityLikeStatus` 查询点赞数量和点赞状态，封装到 map 集合，然后通过工具类封装成 JSON 数据返回。（后续加入Kafka操作队列异步触发点赞方法的真正执行和计算帖子分数）
+
+  ```java
+  @RequestMapping(path = "/like", method = RequestMethod.POST)
+  @ResponseBody
+  public String like(int entityType, int entityId, int entityUserId, int postId) {
+      User user = hostHolder.getUser();
+  
+      // 点赞
+      likeService.like(user.getId(), entityType, entityId, entityUserId);
+  
+      // 数量
+      long likeCount = likeService.findEntityLikeCount(entityType, entityId);
+      // 状态
+      int likeStatus = likeService.findEntityLikeStatus(user.getId(), entityType, entityId);
+      // 返回的结果
+      Map<String, Object> map = new HashMap<>();
+      map.put("likeCount", likeCount);
+      map.put("likeStatus", likeStatus);
+  
+      // 触发点赞事件
+      if (likeStatus == 1) {
+          Event event = new Event()
+                  .setTopic(TOPIC_LIKE)
+                  .setUserId(hostHolder.getUser().getId())
+                  .setEntityType(entityType)
+                  .setEntityId(entityId)
+                  .setEntityUserId(entityUserId)
+                  .setData("postId", postId);
+          eventProducer.fireEvent(event);
+      }
+  
+      if(entityType == ENTITY_TYPE_POST) {
+          // 计算帖子分数
+          String redisKey = RedisKeyUtil.getPostScoreKey();
+          redisTemplate.opsForSet().add(redisKey, postId);
+      }
+  
+      return CommunityUtil.getJSONString(0, null, map);
+  }
+  ```
 
 （更新首页帖子点赞数量）在表现层的 HomeController 类
 
@@ -2289,6 +2382,8 @@ public class ServiceLogAspect {
 
 对点赞功能进行重构
 
+![image-20221112181840614](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112181840614.png)
+
 在 RedisUnitl 工具类
 
 - 新增用户获得赞 key 的前缀常量 `like:user`
@@ -2296,16 +2391,20 @@ public class ServiceLogAspect {
 
 在 LikeService 中
 
-- 重构 `like` 方法，在参数列表中加入 entityUserId 表示被点赞用户的 id，用来更新用户的被点赞数量。
+- 重构 `like` 方法，在参数列表中加入 entityUserId 表示被点赞用户的 id，用来更新用户的被点赞数量。（代码在上一节）
   - 通过 RedisTemplate 对象的 `execute` 方法实现事务，保证被点赞用户点和点赞用户的数据更新一致。通过 `isMember` 方法查询用户的点赞状态，之后通过 `mutli` 方法开启事务。
   - 当用户已点赞时，调用 `remove` 方法将当前用户从点赞用户的集合中移除，调用 `decrement` 方法将被点赞用户的被点赞数减 1；当用户未点赞时，调用 `add` 方法将当前用户添加到点赞用户的集合，调用 `increment` 方法将被点赞用户的被点赞数加 1。
 - 增加 `findUserLikeCount` 方法，以用户 id 作为 key，调用 `get` 方法查询用户所获得的点赞数。
 
-在 LikeController 中给 `like` 方法增加 entityUserId 参数即可。
+在 LikeController 中给 `like` 方法增加 entityUserId 参数即可，相当于是在给用户点赞的时候，被点赞用户的总被赞数增加。
 
 ------
 
 ### 关注
+
+![image-20221112205844736](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112205844736.png)
+
+数据结构采用zset，score表示关注事件
 
 在 RedisUnitl 工具类
 
@@ -2315,35 +2414,55 @@ public class ServiceLogAspect {
 
 创建业务层的 FollowService 类
 
-- 新增
-
-   
-
-  ```
-  follow
-  ```
-
-   
-
-  方法，当用户关注某实体时，
+- 新增follow方法，当用户关注某实体时，
 
   - 调用 `add` 方法将当前实体 id 和时间作为 value 和 score加入用户的关注集合。
+
   - 调用 `add` 方法将当前用户 id 和时间作为 value 和 score 加入实体的粉丝集合。
 
-- 新增
+    ```java
+    public void follow(int userId, int entityType, int entityId) {
+        redisTemplate.execute(new SessionCallback() {
+            @Override
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                String followeeKey = RedisKeyUtil.getFolloweeKey(userId, entityType);
+                String followerKey = RedisKeyUtil.getFollowerKey(entityType, entityId);
+    
+                operations.multi();
+    
+                operations.opsForZSet().add(followeeKey, entityId, System.currentTimeMillis());
+                operations.opsForZSet().add(followerKey, userId, System.currentTimeMillis());
+    
+                return operations.exec();
+            }
+        });
+    }
+    ```
 
-   
-
-  ```
-  unfollow
-  ```
-
-   
-
-  方法，当用户取消关注某实体时，
+- 新增unfollow方法，当用户取消关注某实体时，
 
   - 调用 `remove` 方法将当前实体从用户的关注集合移除。
+
   - 调用 `remove` 方法将用户从实体的粉丝集合移除。
+
+    ```java
+    public void unfollow(int userId, int entityType, int entityId) {
+        redisTemplate.execute(new SessionCallback() {
+            @Override
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                String followeeKey = RedisKeyUtil.getFolloweeKey(userId, entityType);
+                String followerKey = RedisKeyUtil.getFollowerKey(entityType, entityId);
+    
+                operations.multi();
+    
+                operations.opsForZSet().remove(followeeKey, entityId);
+                operations.opsForZSet().remove(followerKey, userId);
+    
+                return operations.exec();
+            }
+        });
+    }
+    ```
 
 ------
 
@@ -2352,8 +2471,30 @@ public class ServiceLogAspect {
 在业务层的 FollowService 类
 
 - 新增 `findFolloweeCount` 方法，调用 zset 的 `zcard` 方法查询某用户关注的实体数量。
+
 - 新增 `findFollowerCount` 方法，调用 zset 的 `zcard` 方法查询某实体的粉丝数量。
+
 - 新增 `hasFollowed` 方法，根据 zset 的 `zscore` 方法返回值查询当前用户是否关注某实体。
+
+  ```java
+  // 查询关注的实体的数量
+  public long findFolloweeCount(int userId, int entityType) {
+      String followeeKey = RedisKeyUtil.getFolloweeKey(userId, entityType);
+      return redisTemplate.opsForZSet().zCard(followeeKey);
+  }
+  
+  // 查询实体的粉丝的数量
+  public long findFollowerCount(int entityType, int entityId) {
+      String followerKey = RedisKeyUtil.getFollowerKey(entityType, entityId);
+      return redisTemplate.opsForZSet().zCard(followerKey);
+  }
+  
+  // 查询当前用户是否已关注该实体
+  public boolean hasFollowed(int userId, int entityType, int entityId) {
+      String followeeKey = RedisKeyUtil.getFolloweeKey(userId, entityType);
+      return redisTemplate.opsForZSet().score(followeeKey, entityId) != null;
+  }
+  ```
 
 在 UserController 中新增 `getProfilePage` 方法获取个人主页。
 
@@ -2378,17 +2519,26 @@ public class ServiceLogAspect {
 
 ### 优化登录模块
 
+![image-20221112211805462](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112211805462.png)
+
 **存储验证码**
 
 在 RedisUntil 工具类
 
 - 新增验证码前缀常量 `kaptcha`
-- 新增 `getKaptchaKey` 方法，通过一个用户凭证（由于未登录，利用 cookie 实现）获得对应验证码的 key 值（利用 string 存储验证码）。
+- 新增 `getKaptchaKey` 方法，通过一个用户凭证（**由于未登录，利用 cookie 实现**）获得对应验证码的 key 值（利用 string 存储验证码）。
 
 在表现层的 LoginController 类
 
-- 重构 `getKaptcha` 方法，将验证码存入 redis，key 值是当前随机生成的一个字符串，同时将该字符串存入 cookie。
+- 重构 `getKaptcha` 方法，将验证码存入 redis，**key 值是当前随机生成的一个字符串**，同时将该字符串存入 cookie。**用到了cookie**，不要用userid当前缀，可能被钻小空子。
+
+- ![image-20221112213028034](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112213028034.png)
+
+  
+
 - 重构 `login` 方法，从 cookie 中获得随机字符串，生成验证码的 key 值，然后获取对应的 value 值即验证码。
+
+- ![image-20221112212920538](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112212920538.png)
 
 ------
 
@@ -2397,13 +2547,43 @@ public class ServiceLogAspect {
 在 RedisUntil 工具类
 
 - 新增登录凭证前缀常量 `ticket`
+
 - 新增 `getTicketKey` 方法，通过字符串获得登录凭证的对应 key 值（利用 string 存储）。
+
+  ```java
+  // 登录的凭证
+  public static String getTicketKey(String ticket) {
+      return PREFIX_TICKET + SPLIT + ticket;
+  }
+  ```
 
 在业务层的 UserService 类
 
 - 重构 `login` 方法，将登录凭证存入 redis 中。
+
+  ![image-20221112214247439](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221112214247439.png)
+
 - 重构 `logout` 方法，先从 redis 中获取登录凭证对象，将状态设为无效再重新存储进 redis。
+
+  ```java
+   public void logout(String ticket) {
+  //        loginTicketMapper.updateStatus(ticket, 1);
+          String redisKey = RedisKeyUtil.getTicketKey(ticket);
+          LoginTicket loginTicket = (LoginTicket) redisTemplate.opsForValue().get(redisKey);
+          loginTicket.setStatus(1);
+          redisTemplate.opsForValue().set(redisKey, loginTicket);
+      }
+  ```
+
 - 重构 `findLoginTicket` 方法，根据 ticket 字符串获得对应登录凭证的 key，然后从 redis 查询登录凭证。
+
+  ```java
+  public LoginTicket findLoginTicket(String ticket) {
+  //        return loginTicketMapper.selectByTicket(ticket);
+          String redisKey = RedisKeyUtil.getTicketKey(ticket);
+          return (LoginTicket) redisTemplate.opsForValue().get(redisKey);
+      }
+  ```
 
 ------
 
@@ -2412,18 +2592,675 @@ public class ServiceLogAspect {
 在 RedisUntil 工具类
 
 - 新增用户前缀常量 `user`
+
 - 新增 `getUserKey` 方法，通过用户 id 获得用户的对应 key 值（利用 string 存储）。
+
+  ```java
+  // 用户
+  public static String getUserKey(int userId) {
+      return PREFIX_USER + SPLIT + userId;
+  }
+  ```
 
 在业务层的 UserService 类
 
 - 新增 `getCache`，从缓存获取用户信息。
+
 - 新增 `initCache`，从 MySQL 查询用户信息并存入 redis。
+
 - 新增 `clearCache`，用户信息变更（更新头像，激活）时清除缓存。
-- 重构 `findUserById` 方法，首先调用 `getCache`从缓存获取用户信息，如果获取为 null 则调用 `initCache`。
+
+- ```java
+  // 1.优先从缓存中取值
+  private User getCache(int userId) {
+      String redisKey = RedisKeyUtil.getUserKey(userId);
+      return (User) redisTemplate.opsForValue().get(redisKey);
+  }
+  
+  // 2.取不到时初始化缓存数据
+  private User initCache(int userId) {
+      User user = userMapper.selectById(userId);
+      String redisKey = RedisKeyUtil.getUserKey(userId);
+      redisTemplate.opsForValue().set(redisKey, user, 3600, TimeUnit.SECONDS);
+      return user;
+  }
+  
+  // 3.数据变更时清除缓存数据
+  private void clearCache(int userId) {
+      String redisKey = RedisKeyUtil.getUserKey(userId);
+      redisTemplate.delete(redisKey);
+  }
+  ```
+
+- 重构 `findUserById` 方法，首先调用 `getCache`从缓存获取用户信息，如果获取为 null 则调用 `initCache`。先更新数据库在清除缓存。
+
+  ```java
+  public User findUserById(int id) {
+  //        return userMapper.selectById(id);
+          User user = getCache(id);
+          if (user == null) {
+              user = initCache(id);
+          }
+          return user;
+      }
+  ```
+
+## 7.Kafka
+
+### 发送系统通知
+
+![image-20221113112556500](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113112556500.png)
+
+在 CommunityConstant 接口中新增三个常量，代表三个主题：评论、点赞、关注。
+
+创建 Event 类，封装事件对象，包括主题、用户 id、实体类型、实体 id、实体用户 id 以及一个 map 集合存放其它信息。链式调用。
+
+![image-20221113120007570](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113120007570.png)
+
+![image-20221113120040191](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113120040191.png)
+
+#### 触发事件
+
+创建 EventProducer 事件生产者，新增 `fireEvent(Event event)` 方法，通过 Event 获取事件类型，并将其封装成 JSON 数据，然后调用注入的 KafkaTemplate 实例的 send 方法发送。
+
+```java
+@Component
+public class EventProducer {
+
+    @Autowired
+    private KafkaTemplate kafkaTemplate;
+
+    // 处理事件
+    public void fireEvent(Event event) {
+        // 将事件发布到指定的主题
+        kafkaTemplate.send(event.getTopic(), JSONObject.toJSONString(event));
+    }
+
+}
+```
+
+在 CommentController、LikeControler、FollowController 中注入 EventProducer 实例，分别重构 `addComment` 方法、`like` 方法、`follow` 方法，封装 Event 对象，然后调用 EventProducer 的`fireEvent` 方法发布通知。
+
+#### 消费事件
+
+创建 EventConsumer 事件消费者，消费者是被动触发的，这一步全是系统通知。
+
+- 注入 MessageService 实例。
+
+- 增加 `handleCommentMessage(ConsumerRecord record)` 方法，通过 `@KafkaListener` 注解，topic 包括了评论、点赞和关注。从 recored 中获取信息，封装成 Message 对象然后调用 `addMessage` 方法插入数据库。
+
+  ```java
+  @KafkaListener(topics = {TOPIC_COMMENT, TOPIC_LIKE, TOPIC_FOLLOW})
+  public void handleCommentMessage(ConsumerRecord record) {
+      if (record == null || record.value() == null) {
+          logger.error("消息的内容为空!");
+          return;
+      }
+  
+      Event event = JSONObject.parseObject(record.value().toString(), Event.class);
+      if (event == null) {
+          logger.error("消息格式错误!");
+          return;
+      }
+  
+      // 发送站内通知
+      Message message = new Message();
+      message.setFromId(SYSTEM_USER_ID);
+      message.setToId(event.getEntityUserId());
+      message.setConversationId(event.getTopic());
+      message.setCreateTime(new Date());
+  
+      Map<String, Object> content = new HashMap<>();
+      content.put("userId", event.getUserId());
+      content.put("entityType", event.getEntityType());
+      content.put("entityId", event.getEntityId());
+  
+      if (!event.getData().isEmpty()) {
+          for (Map.Entry<String, Object> entry : event.getData().entrySet()) {
+              content.put(entry.getKey(), entry.getValue());
+          }
+      }
+  
+      message.setContent(JSONObject.toJSONString(content));
+      messageService.addMessage(message);
+  }
+  ```
+
+【问题】没有向数据库插入系统通知记录，原因是 ServiceLogAspect 类进行日志处理时要获取 ServletRequestAttributes 请求对象，这个对象是controller里面的，Kafka 的消费事件是自动触发的，没有进行新的请求，会产生请求对象的空指针异常。
+
+![image-20221113140611563](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113140611563.png)
+
+------
+
+### 显示系统通知
+
+![image-20221113140748886](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113140748886.png)
+
+#### 通知列表
+
+在 MessageMapper 接口中
+
+- 新增 `selectLatestNotice(int userId, String topic)` 方法，查询某主题最新的通知。
+
+  ```java
+  <select id="selectLatestNotice" resultType="com.nowcoder.community.entity.Message">
+      select <include refid="selectFields"></include>
+      from message
+      where id in (
+          select max(id) from message
+          where status != 2
+          and from_id = 1
+          and to_id = #{userId}
+          and conversation_id = #{topic}
+      )
+  </select>
+  ```
+
+- 新增 `selectNoticeCount(int userId, String topic)` 方法，查询某主题通知的数量。
+
+  ```java
+  <select id="selectNoticeCount" resultType="int">
+      select count(id) from message
+      where status != 2
+      and from_id = 1
+      and to_id = #{userId}
+      and conversation_id = #{topic}
+  </select>
+  ```
+
+- 新增 `selectNoticeUnreadCount(int userId, String topic)` 方法，查询未读通知的数量，使用 if 动态语句，如果没有传入 topic 就查询未读总量。
+
+  ```xml
+  <select id="selectNoticeUnreadCount" resultType="int">
+      select count(id) from message
+      where status = 0
+      and from_id = 1
+      and to_id = #{userId}
+      <if test="topic!=null">
+          and conversation_id = #{topic}
+      </if>
+  </select>
+  ```
+
+在业务层的 MessageService 中
+
+- 新增 `findLatestNotice` 方法，调用 `selectLatestNotice` 方法查询最新通知。	
+
+  ```java
+  public Message findLatestNotice(int userId, String topic) {
+      return messageMapper.selectLatestNotice(userId, topic);
+  }
+  ```
+
+- 新增 `findNoticeCount` 方法，调用 `selectNoticeCount` 方法查询某主题通知的数量。
+
+  ```java
+  public int findNoticeCount(int userId, String topic) {
+      return messageMapper.selectNoticeCount(userId, topic);
+  }
+  ```
+
+- 新增 `findNoticeUnreadCount` 方法，调用 `selectNoticeUnreadCount` 方法查询未读通知的数量。
+
+  ```java
+  public int findNoticeUnreadCount(int userId, String topic) {
+      return messageMapper.selectNoticeUnreadCount(userId, topic);
+  }
+  ```
+
+在表现层的 MessageController 中新增 `getNoticeList` 方法，获取通知列表
+
+- 调用业务层 MessageService 的方法查询评论、点赞、关注的通知，将其封装在一个 HashMap 集合中然后添加到 Model 对象里。
+
+- 调用业务层 MessageService 的方法查询私信和通知的总未读数量，添加到 Model 对象里。
+
+- 返回 `notice.html` 页面。
+
+- ```java
+  @RequestMapping(path = "/notice/list", method = RequestMethod.GET)
+  public String getNoticeList(Model model) {
+      User user = hostHolder.getUser();
+  
+      // 查询评论类通知
+      Message message = messageService.findLatestNotice(user.getId(), TOPIC_COMMENT);
+      if (message != null) {
+          Map<String, Object> messageVO = new HashMap<>();
+          messageVO.put("message", message);
+  
+          String content = HtmlUtils.htmlUnescape(message.getContent());
+          Map<String, Object> data = JSONObject.parseObject(content, HashMap.class);
+  
+          messageVO.put("user", userService.findUserById((Integer) data.get("userId")));
+          messageVO.put("entityType", data.get("entityType"));
+          messageVO.put("entityId", data.get("entityId"));
+          messageVO.put("postId", data.get("postId"));
+  
+          int count = messageService.findNoticeCount(user.getId(), TOPIC_COMMENT);
+          messageVO.put("count", count);
+  
+          int unread = messageService.findNoticeUnreadCount(user.getId(), TOPIC_COMMENT);
+          messageVO.put("unread", unread);
+  
+          model.addAttribute("commentNotice", messageVO);
+      }
+  
+      // 查询点赞类通知
+      message = messageService.findLatestNotice(user.getId(), TOPIC_LIKE);
+      if (message != null) {
+          Map<String, Object> messageVO = new HashMap<>();
+          messageVO.put("message", message);
+  
+          String content = HtmlUtils.htmlUnescape(message.getContent());
+          Map<String, Object> data = JSONObject.parseObject(content, HashMap.class);
+  
+          messageVO.put("user", userService.findUserById((Integer) data.get("userId")));
+          messageVO.put("entityType", data.get("entityType"));
+          messageVO.put("entityId", data.get("entityId"));
+          messageVO.put("postId", data.get("postId"));
+  
+          int count = messageService.findNoticeCount(user.getId(), TOPIC_LIKE);
+          messageVO.put("count", count);
+  
+          int unread = messageService.findNoticeUnreadCount(user.getId(), TOPIC_LIKE);
+          messageVO.put("unread", unread);
+  
+          model.addAttribute("likeNotice", messageVO);
+      }
+  
+      // 查询关注类通知
+      message = messageService.findLatestNotice(user.getId(), TOPIC_FOLLOW);
+      if (message != null) {
+          Map<String, Object> messageVO = new HashMap<>();
+          messageVO.put("message", message);
+  
+          String content = HtmlUtils.htmlUnescape(message.getContent());
+          Map<String, Object> data = JSONObject.parseObject(content, HashMap.class);
+  
+          messageVO.put("user", userService.findUserById((Integer) data.get("userId")));
+          messageVO.put("entityType", data.get("entityType"));
+          messageVO.put("entityId", data.get("entityId"));
+  
+          int count = messageService.findNoticeCount(user.getId(), TOPIC_FOLLOW);
+          messageVO.put("count", count);
+  
+          int unread = messageService.findNoticeUnreadCount(user.getId(), TOPIC_FOLLOW);
+          messageVO.put("unread", unread);
+  
+          model.addAttribute("followNotice", messageVO);
+      }
+  
+      // 查询未读消息数量
+      int letterUnreadCount = messageService.findLetterUnreadCount(user.getId(), null);
+      model.addAttribute("letterUnreadCount", letterUnreadCount);
+      int noticeUnreadCount = messageService.findNoticeUnreadCount(user.getId(), null);
+      model.addAttribute("noticeUnreadCount", noticeUnreadCount);
+  
+      return "/site/notice";
+  }
+  ```
+
+------
+
+#### 显示通知详情
+
+在 MessageMapper 接口新增 `selectNotices` 方法，查询某个主题的通知列表，在 `message-mapper.xml` 配置 SQL。
+
+```xml
+<select id="selectNotices" resultType="com.nowcoder.community.entity.Message">
+    select <include refid="selectFields"></include>
+    from message
+    where status != 2
+    and from_id = 1
+    and to_id = #{userId}
+    and conversation_id = #{topic}
+    order by create_time desc
+    limit #{offset}, #{limit}
+</select>
+```
+
+在业务层的 MessageService 中新增 `findNotices` 方法，调用 `selectNotices` 方法。
+
+```java
+public List<Message> findNotices(int userId, String topic, int offset, int limit) {
+    return messageMapper.selectNotices(userId, topic, offset, limit);
+}
+```
+
+在表现层的 MessageController 中新增 `getNoticeDetail` 方法
+
+- 调用 `findNotices` 方法获取通知列表详情，封装到 List 集合并存入 Model 对象。
+
+- 从通知集合中获取 id 集合，调用 `readMessage` 方法将消息设为已读。
+
+- 返回 `notice-detail.html` 页面。
+
+  ```java
+  @RequestMapping(path = "/notice/detail/{topic}", method = RequestMethod.GET)
+  public String getNoticeDetail(@PathVariable("topic") String topic, Page page, Model model) {
+      User user = hostHolder.getUser();
+  
+      page.setLimit(5);
+      page.setPath("/notice/detail/" + topic);
+      page.setRows(messageService.findNoticeCount(user.getId(), topic));
+  
+      List<Message> noticeList = messageService.findNotices(user.getId(), topic, page.getOffset(), page.getLimit());
+      List<Map<String, Object>> noticeVoList = new ArrayList<>();
+      if (noticeList != null) {
+          for (Message notice : noticeList) {
+              Map<String, Object> map = new HashMap<>();
+              // 通知
+              map.put("notice", notice);
+              // 内容
+              String content = HtmlUtils.htmlUnescape(notice.getContent());
+              Map<String, Object> data = JSONObject.parseObject(content, HashMap.class);
+              map.put("user", userService.findUserById((Integer) data.get("userId")));
+              map.put("entityType", data.get("entityType"));
+              map.put("entityId", data.get("entityId"));
+              map.put("postId", data.get("postId"));
+              // 通知作者
+              map.put("fromUser", userService.findUserById(notice.getFromId()));
+  
+              noticeVoList.add(map);
+          }
+      }
+      model.addAttribute("notices", noticeVoList);
+  
+      // 设置已读
+      List<Integer> ids = getLetterIds(noticeList);
+      if (!ids.isEmpty()) {
+          messageService.readMessage(ids);
+      }
+  
+      return "/site/notice-detail";
+  }
+  ```
+
+------
+
+#### 显示未读通知总数
+
+创建 MessageInterceptor 拦截器
+
+- 注入 MessageService 实例和 HostHolder 实例。
+
+- 重写 `postHandle` 方法，查询私信和通知的未读数量和，然后添加到 ModelAndView 对象。
+
+  ```java
+  @Component
+  public class MessageInterceptor implements HandlerInterceptor {
+  
+      @Autowired
+      private HostHolder hostHolder;
+  
+      @Autowired
+      private MessageService messageService;
+  
+      @Override
+      public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) throws Exception {
+          User user = hostHolder.getUser();
+          if (user != null && modelAndView != null) {
+              int letterUnreadCount = messageService.findLetterUnreadCount(user.getId(), null);
+              int noticeUnreadCount = messageService.findNoticeUnreadCount(user.getId(), null);
+              modelAndView.addObject("allUnreadCount", letterUnreadCount + noticeUnreadCount);
+          }
+      }
+  }
+  ```
+
+在 WebConfig 中注入 MessageInterceptor 实例，并在 `addInterceptors` 方法中添加该拦截器。
+
+## 8.Elasticsearch
+
+### 基本使用
+
+![image-20221113160636492](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113160636492.png)
+
+类型在es7里面已经没用了，六里面也只是个占位的没实际作用了，比如下面put请求里面的_doc就没什么用。
+
+![image-20221113160838751](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113160838751.png)
+
+![image-20221113161008759](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113161008759.png)
+
+### Spring整合es
+
+![image-20221113161603261](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113161603261.png)
+
+* 配置文件
+
+  ```xml
+  # ElasticsearchProperties
+  spring.data.elasticsearch.cluster-name=nowcoder
+  spring.data.elasticsearch.cluster-nodes=127.0.0.1:9300
+  ```
+
+* 解决redis和es之间的netty冲突
+
+  ![image-20221113162115230](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113162115230.png)
+
+* 配置帖子的实体类,将之与es中的属性关联。
+
+  ![image-20221113162808798](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113162808798.png)
+
+* 在dao包下创建es子包，在其中创建` discussPostRepository`
+
+  ```java
+  @Repository  //泛型中的第二个参数是主键的类型
+  public interface DiscussPostRepository extends ElasticsearchRepository<DiscussPost, Integer> {
+  
+  }
+  ```
+
+* 在test中测试增删改查方法。
+
+### 开发社区搜索功能
+
+![image-20221113165032970](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113165032970.png)
+
+* 业务层，创建ElasticSearchService，编写增删改查方法。
+
+  ```java
+  @Service
+  public class ElasticsearchService {
+  
+      @Autowired
+      private DiscussPostRepository discussRepository;
+  
+      @Autowired
+      private ElasticsearchTemplate elasticTemplate;
+  
+      public void saveDiscussPost(DiscussPost post) {
+          discussRepository.save(post);
+      }
+  
+      public void deleteDiscussPost(int id) {
+          discussRepository.deleteById(id);
+      }
+  
+      public Page<DiscussPost> searchDiscussPost(String keyword, int current, int limit) {
+          SearchQuery searchQuery = new NativeSearchQueryBuilder()
+                  .withQuery(QueryBuilders.multiMatchQuery(keyword, "title", "content"))
+                  .withSort(SortBuilders.fieldSort("type").order(SortOrder.DESC))
+                  .withSort(SortBuilders.fieldSort("score").order(SortOrder.DESC))
+                  .withSort(SortBuilders.fieldSort("createTime").order(SortOrder.DESC))
+                  .withPageable(PageRequest.of(current, limit))
+                  .withHighlightFields(
+                          new HighlightBuilder.Field("title").preTags("<em>").postTags("</em>"),
+                          new HighlightBuilder.Field("content").preTags("<em>").postTags("</em>")
+                  ).build();
+  
+          return elasticTemplate.queryForPage(searchQuery, DiscussPost.class, new SearchResultMapper() {
+              @Override
+              public <T> AggregatedPage<T> mapResults(SearchResponse response, Class<T> aClass, Pageable pageable) {
+                  SearchHits hits = response.getHits();
+                  if (hits.getTotalHits() <= 0) {
+                      return null;
+                  }
+  
+                  List<DiscussPost> list = new ArrayList<>();
+                  for (SearchHit hit : hits) {
+                      DiscussPost post = new DiscussPost();
+  
+                      String id = hit.getSourceAsMap().get("id").toString();
+                      post.setId(Integer.valueOf(id));
+  
+                      String userId = hit.getSourceAsMap().get("userId").toString();
+                      post.setUserId(Integer.valueOf(userId));
+  
+                      String title = hit.getSourceAsMap().get("title").toString();
+                      post.setTitle(title);
+  
+                      String content = hit.getSourceAsMap().get("content").toString();
+                      post.setContent(content);
+  
+                      String status = hit.getSourceAsMap().get("status").toString();
+                      post.setStatus(Integer.valueOf(status));
+  
+                      String createTime = hit.getSourceAsMap().get("createTime").toString();
+                      post.setCreateTime(new Date(Long.valueOf(createTime)));
+  
+                      String commentCount = hit.getSourceAsMap().get("commentCount").toString();
+                      post.setCommentCount(Integer.valueOf(commentCount));
+  
+                      // 处理高亮显示的结果
+                      HighlightField titleField = hit.getHighlightFields().get("title");
+                      if (titleField != null) {
+                          post.setTitle(titleField.getFragments()[0].toString());
+                      }
+  
+                      HighlightField contentField = hit.getHighlightFields().get("content");
+                      if (contentField != null) {
+                          post.setContent(contentField.getFragments()[0].toString());
+                      }
+  
+                      list.add(post);
+                  }
+  
+                  return new AggregatedPageImpl(list, pageable,
+                          hits.getTotalHits(), response.getAggregations(), response.getScrollId(), hits.getMaxScore());
+              }
+          });
+      }
+  
+  }
+  ```
+
+* 表现层 在DiscussPostController的`addDiscussPost`方法中添加异步触发发帖事件的代码，利用kafka。
+
+  ```java
+  // 触发发帖事件
+  Event event = new Event()
+          .setTopic(TOPIC_PUBLISH)
+          .setUserId(user.getId())
+          .setEntityType(ENTITY_TYPE_POST)
+          .setEntityId(post.getId());
+  eventProducer.fireEvent(event);
+  ```
+
+* 在commentController的`addComment`方法中添加代码
+
+  ```
+  if (comment.getEntityType() == ENTITY_TYPE_POST) {
+              // 触发发帖事件
+              event = new Event()
+                      .setTopic(TOPIC_PUBLISH)
+                      .setUserId(comment.getUserId())
+                      .setEntityType(ENTITY_TYPE_POST)
+                      .setEntityId(discussPostId);
+              eventProducer.fireEvent(event);
+              // 计算帖子分数
+              String redisKey = RedisKeyUtil.getPostScoreKey();
+              redisTemplate.opsForSet().add(redisKey, discussPostId);
+          }
+  ```
+
+* 在EventConsumer中添加新方法消费将帖子发布到es中的事件
+
+  ```java
+  // 消费发帖事件
+  @KafkaListener(topics = {TOPIC_PUBLISH})
+  public void handlePublishMessage(ConsumerRecord record) {
+      if (record == null || record.value() == null) {
+          logger.error("消息的内容为空!");
+          return;
+      }
+  
+      Event event = JSONObject.parseObject(record.value().toString(), Event.class);
+      if (event == null) {
+          logger.error("消息格式错误!");
+          return;
+      }
+  
+      DiscussPost post = discussPostService.findDiscussPostById(event.getEntityId());
+      elasticsearchService.saveDiscussPost(post);
+  }
+  ```
+
+* 新建SearchController
+
+  ```java
+  @Controller
+  public class SearchController implements CommunityConstant {
+  
+      @Autowired
+      private ElasticsearchService elasticsearchService;
+  
+      @Autowired
+      private UserService userService;
+  
+      @Autowired
+      private LikeService likeService;
+  
+      // search?keyword=xxx
+      @RequestMapping(path = "/search", method = RequestMethod.GET)
+      public String search(String keyword, Page page, Model model) {
+          // 搜索帖子
+          org.springframework.data.domain.Page<DiscussPost> searchResult =
+                  elasticsearchService.searchDiscussPost(keyword, page.getCurrent() - 1, page.getLimit());
+          // 聚合数据
+          List<Map<String, Object>> discussPosts = new ArrayList<>();
+          if (searchResult != null) {
+              for (DiscussPost post : searchResult) {
+                  Map<String, Object> map = new HashMap<>();
+                  // 帖子
+                  map.put("post", post);
+                  // 作者
+                  map.put("user", userService.findUserById(post.getUserId()));
+                  // 点赞数量
+                  map.put("likeCount", likeService.findEntityLikeCount(ENTITY_TYPE_POST, post.getId()));
+  
+                  discussPosts.add(map);
+              }
+          }
+          model.addAttribute("discussPosts", discussPosts);
+          model.addAttribute("keyword", keyword);
+  
+          // 分页信息
+          page.setPath("/search?keyword=" + keyword);
+          page.setRows(searchResult == null ? 0 : (int) searchResult.getTotalElements());
+  
+          return "/site/search";
+      }
+  
+  }
+  ```
+
+* 结果展示
+* ![image-20221113171722613](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113171722613.png)
 
 ## 项目优化
 
-1. 将验证码从session移入到redis中
-2. 将登录凭证存入到redis中，修改登陆凭证也是修改redis中的状态，不再麻烦数据库了。
+1. 将验证码从session移入到redis中，使用cookie，传给客户端。
 
-3. 将头像存在七牛云而不是本地
+2. 将登录凭证存入到redis中，修改登陆凭证也是修改redis中的状态，不再麻烦数据库了，登录凭证表可以废弃了。
+
+3. 一二两条具体看第6节redis中的优化登录模块
+
+4. Kafka的使用，发送系统消息用到kafka（用户xxx给你点了个赞、关注、评论），消息数据格式也不一样（普通的内容就是类似于：你好啊，然后系统的信息在数据库中是一条json格式的数据，存储各种信息，userid呀，评论类型呀等等），使用过滤器messageInterceptor，访问任何一个页面都经过过滤器来实时显示未读的消息。
+
+   ![image-20221113113911288](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113113911288.png)
+
+   ![image-20221113154053276](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113154053276.png)
+
+5. es中存储帖子，通过es提供的方法可以高亮关键字可以看上面的代码，es极大的优化了搜索效率。
+
+6. 将头像存在七牛云而不是本地
