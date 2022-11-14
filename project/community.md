@@ -1,4 +1,4 @@
-## 1.数据库表
+1.数据库表
 
 #### 用户表 user
 
@@ -130,7 +130,7 @@
 - 创建 `disscusspost-mapper.xml`。
   - `where status != 2` 拉黑的帖子不展现。
   
-  - `<if test="userId!=0">`  userID 为 0 时不使用，按照类型，发帖时间排序。
+  - `<if test="userId!=0">`  userID 为 0查询的时所有帖子，userID不为0时查询某个用户的帖子列表，按照类型，发帖时间排序。
   
     ![image-20221109160038322](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221109160038322.png)
 
@@ -280,7 +280,7 @@ public class Page {
 
 ![image-20221109164923424](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221109164923424.png)
 
-拼接后的访问路径是/index?current = 1这种
+拼接后的访问路径是/index?current = 1这种，SpringMvc会自动将current参数装入到服务器端page中的current。
 
 ![image-20221109165446656](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221109165446656.png)
 
@@ -3247,6 +3247,1296 @@ public List<Message> findNotices(int userId, String topic, int offset, int limit
 * 结果展示
 * ![image-20221113171722613](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113171722613.png)
 
+## 9.Spring Security
+
+### 基本使用
+
+<img src="https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113211027597.png" alt="image-20221113211027597" style="zoom:67%;" />
+
+<img src="https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113211550019.png" alt="image-20221113211550019" style="zoom:50%;" />
+
+**Spring Secruity - demo**
+
+* 实体类要实现userdetails接口，实现相关的方法。
+
+  ```java
+  // true: 账号未过期.
+  @Override
+  public boolean isAccountNonExpired() {
+      return true;
+  }
+  
+  // true: 账号未锁定.
+  @Override
+  public boolean isAccountNonLocked() {
+      return true;
+  }
+  
+  // true: 凭证未过期.
+  @Override
+  public boolean isCredentialsNonExpired() {
+      return true;
+  }
+  
+  // true: 账号可用.
+  @Override
+  public boolean isEnabled() {
+      return true;
+  }
+  
+  @Override
+  public Collection<? extends GrantedAuthority> getAuthorities() {
+      List<GrantedAuthority> list = new ArrayList<>();
+      list.add(new GrantedAuthority() {
+          @Override
+          public String getAuthority() {
+              switch (type) {
+                  case 1:
+                      return "ADMIN";
+                  default:
+                      return "USER";
+              }
+          }
+      });
+      return list;
+  }
+  ```
+
+* UserService也要实现UserDetailService接口
+
+  ```java
+  @Service
+  public class UserService implements UserDetailsService {
+  
+      @Autowired
+      private UserMapper userMapper;
+  
+      public User findUserByName(String username) {
+          return userMapper.selectByName(username);
+      }
+  
+      @Override
+      public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+          return this.findUserByName(username);
+      }
+  }
+  ```
+
+* 配置SpringSecurity，创建SecurityConfig继承WebSecurityConfigureAdapter
+
+  ```
+  AuthenticationManager: 认证的核心接口.
+  AuthenticationManagerBuilder: 用于构建AuthenticationManager对象的工具.
+  ProviderManager: AuthenticationManager接口的默认实现类.
+  // 内置的认证规则（不满足需求，自己重写一个providermanager） auth.userDetailsService(userService).passwordEncoder(new Pbkdf2PasswordEncoder("12345"));
+  // 自定义认证规则
+  AuthenticationProvider: ProviderManager持有一组AuthenticationProvider,每个AuthenticationProvider负责一种认证，有很多种认证管理器的比如账号密码认证器、微信认证器等等，都可以自己写。
+  // 委托模式: ProviderManager将认证委托给AuthenticationProvider.
+  auth.authenticationProvider(new AuthenticationProvider() {
+              // Authentication: 用于封装认证信息的接口,不同的实现类代表不同类型的认证信息.认证成功后会返回一个完整的Authentication，里面包含principal: 主要信息（user）; credentials: 证书（一般是密码）; authorities: 权限。很简单的。
+              @Override
+              public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+                  String username = authentication.getName();
+                  String password = (String) authentication.getCredentials();
+  
+                  User user = userService.findUserByName(username);
+                  if (user == null) {
+                      throw new UsernameNotFoundException("账号不存在!");
+                  }
+  
+                  password = CommunityUtil.md5(password + user.getSalt());
+                  if (!user.getPassword().equals(password)) {
+                      throw new BadCredentialsException("密码不正确!");
+                  }
+  
+                  // principal: 主要信息; credentials: 证书; authorities: 权限;
+                  return new UsernamePasswordAuthenticationToken(user, user.getPassword(), user.getAuthorities());
+              }
+              // 当前的AuthenticationProvider支持哪种类型的认证.
+              @Override
+              public boolean supports(Class<?> aClass) {
+                  // UsernamePasswordAuthenticationToken: Authentication接口的常用的实现类.
+                  return UsernamePasswordAuthenticationToken.class.equals(aClass);
+              }
+          });
+      }
+  ```
+
+  ```java
+  配置web相关的，例如登录、退出配置，配置页面访问权限、还可以在provider前在添加一个filter（验证码过滤器），配置记住我（Remember me）。
+      @Override
+      protected void configure(HttpSecurity http) throws Exception {
+          // 登录相关配置
+          http.formLogin()
+                  .loginPage("/loginpage")
+                  .loginProcessingUrl("/login")
+                  .successHandler(new AuthenticationSuccessHandler() {
+                      @Override
+                      public void onAuthenticationSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
+                          response.sendRedirect(request.getContextPath() + "/index");
+                      }
+                  })
+                  .failureHandler(new AuthenticationFailureHandler() {
+                      @Override
+                      public void onAuthenticationFailure(HttpServletRequest request, HttpServletResponse response, AuthenticationException e) throws IOException, ServletException {
+                          request.setAttribute("error", e.getMessage());
+                          request.getRequestDispatcher("/loginpage").forward(request, response);
+                      }
+                  });
+  
+          // 退出相关配置
+          http.logout()
+                  .logoutUrl("/logout")
+                  .logoutSuccessHandler(new LogoutSuccessHandler() {
+                      @Override
+                      public void onLogoutSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
+                          response.sendRedirect(request.getContextPath() + "/index");
+                      }
+                  });
+  
+          // 授权配置
+          http.authorizeRequests()
+                  .antMatchers("/letter").hasAnyAuthority("USER", "ADMIN")
+                  .antMatchers("/admin").hasAnyAuthority("ADMIN")
+                  .and().exceptionHandling().accessDeniedPage("/denied");
+  
+          // 增加Filter,处理验证码
+          http.addFilterBefore(new Filter() {
+              @Override
+              public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+                  HttpServletRequest request = (HttpServletRequest) servletRequest;
+                  HttpServletResponse response = (HttpServletResponse) servletResponse;
+                  if (request.getServletPath().equals("/login")) {
+                      String verifyCode = request.getParameter("verifyCode");
+                      if (verifyCode == null || !verifyCode.equalsIgnoreCase("1234")) {
+                          request.setAttribute("error", "验证码错误!");
+                          request.getRequestDispatcher("/loginpage").forward(request, response);
+                          return;
+                      }
+                  }
+                  // 让请求继续向下执行.
+                  filterChain.doFilter(request, response);
+              }
+          }, UsernamePasswordAuthenticationFilter.class);
+  
+          // 记住我
+          http.rememberMe()
+                  .tokenRepository(new InMemoryTokenRepositoryImpl())
+                  .tokenValiditySeconds(3600 * 24)
+                  .userDetailsService(userService);
+  
+      }
+  }
+  ```
+
+* Spring Security还有全局的SpringContext对象，我们可以get到认证成功的Authentication对象，里面存有principal（user）、权限、密码（credentials）。
+
+  ![image-20221113221137143](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113221137143.png)
+
+
+
+### 项目使用
+
+ 	![image-20221114111426436](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114111426436.png)
+
+* 在CommunityConstant常量接口中添加三个新的权限常量
+
+  ```java
+  /**
+   * 权限: 普通用户
+   */
+  String AUTHORITY_USER = "user";
+  
+  /**
+   * 权限: 管理员
+   */
+  String AUTHORITY_ADMIN = "admin";
+  
+  /**
+   * 权限: 版主
+   */
+  String AUTHORITY_MODERATOR = "moderator";
+  ```
+
+* 创建SecurityCofig类，配置SpringSecurity，忽略静态资源，配置各种路径的权限（这里取巧了，很简单的用了一下security，并没有配置provider，实际操作可以看上一节基本使用中的操作）
+
+  ```java
+  @Configuration
+  public class SecurityConfig extends WebSecurityConfigurerAdapter implements CommunityConstant {
+  
+      @Override
+      public void configure(WebSecurity web) throws Exception {
+          web.ignoring().antMatchers("/resources/**");
+      }
+  
+      @Override
+      protected void configure(HttpSecurity http) throws Exception {
+          // 授权
+          http.authorizeRequests()
+                  .antMatchers(
+                          "/user/setting",
+                          "/user/upload",
+                          "/discuss/add",
+                          "/comment/add/**",
+                          "/letter/**",
+                          "/notice/**",
+                          "/like",
+                          "/follow",
+                          "/unfollow"
+                  )
+                  .hasAnyAuthority(
+                          AUTHORITY_USER,
+                          AUTHORITY_ADMIN,
+                          AUTHORITY_MODERATOR
+                  )
+                  .antMatchers(
+                          "/discuss/top",
+                          "/discuss/wonderful"
+                  )
+                  .hasAnyAuthority(
+                          AUTHORITY_MODERATOR
+                  )
+                  .antMatchers(
+                          "/discuss/delete",
+                          "/data/**",
+                          "/actuator/**"
+                  )
+                  .hasAnyAuthority(
+                          AUTHORITY_ADMIN
+                  )
+                  .anyRequest().permitAll()
+                  .and().csrf().disable();
+  
+          // 权限不够时的处理
+          http.exceptionHandling()
+                  .authenticationEntryPoint(new AuthenticationEntryPoint() {
+                      // 没有登录
+                      @Override
+                      public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException e) throws IOException, ServletException {
+                          String xRequestedWith = request.getHeader("x-requested-with");
+                          if ("XMLHttpRequest".equals(xRequestedWith)) {
+                              response.setContentType("application/plain;charset=utf-8");
+                              PrintWriter writer = response.getWriter();
+                              writer.write(CommunityUtil.getJSONString(403, "你还没有登录哦!"));
+                          } else {
+                              response.sendRedirect(request.getContextPath() + "/login");
+                          }
+                      }
+                  })
+                  .accessDeniedHandler(new AccessDeniedHandler() {
+                      // 权限不足
+                      @Override
+                      public void handle(HttpServletRequest request, HttpServletResponse response, AccessDeniedException e) throws IOException, ServletException {
+                          String xRequestedWith = request.getHeader("x-requested-with");
+                          if ("XMLHttpRequest".equals(xRequestedWith)) {
+                              response.setContentType("application/plain;charset=utf-8");
+                              PrintWriter writer = response.getWriter();
+                              writer.write(CommunityUtil.getJSONString(403, "你没有访问此功能的权限!"));
+                          } else {
+                              response.sendRedirect(request.getContextPath() + "/denied");
+                          }
+                      }
+                  });
+  
+          // Security底层默认会拦截/logout请求,进行退出处理.
+          // 覆盖它默认的逻辑,才能执行我们自己的退出代码.
+          http.logout().logoutUrl("/securitylogout");
+      }
+  
+  }
+  ```
+
+* 在UserService中创建获得权限的方法，这里也是取巧，正规的是用User实体继承UserDetail，在其中实现获得权限的方法
+
+  ```java
+  public Collection<? extends GrantedAuthority> getAuthorities(int userId) {
+      User user = this.findUserById(userId);
+  
+      List<GrantedAuthority> list = new ArrayList<>();
+      list.add(new GrantedAuthority() {
+  
+          @Override
+          public String getAuthority() {
+              switch (user.getType()) {
+                  case 1:
+                      return AUTHORITY_ADMIN;
+                  case 2:
+                      return AUTHORITY_MODERATOR;
+                  default:
+                      return AUTHORITY_USER;
+              }
+          }
+      });
+      return list;
+  }
+  ```
+
+* 改造LoginTicketInterceptor，加入存放Authentication到SecurityContext中的步骤（取巧了，这样绕过了SpringSecurity的认证流程，还是采用系统原来的认证方案）
+
+  ![image-20221114113519797](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114113519797.png)
+
+* 关闭csrf攻击检测
+
+### 帖子置顶、加精、删除
+
+![image-20221114134759203](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114134759203.png)
+
+* 导入thymeleaf-springsecurity包
+
+* dao层DiscussPostMapper新增方法updateType、updateStatus修改类型、状态
+
+  ```xml
+  <update id="updateType">
+      update discuss_post set type = #{type} where id = #{id}
+  </update>
+  
+  <update id="updateStatus">
+      update discuss_post set status = #{status} where id = #{id}
+  </update>
+  ```
+
+* service实现相关的两个方法，调一下dao层中的方法即可
+
+* Discuss PostController中新增置顶setTop方法，加精方法setWonderful，删除方法setDelete（拉黑，设置状态为2）
+
+  ```java
+  // 置顶
+  @RequestMapping(path = "/top", method = RequestMethod.POST)
+  @ResponseBody
+  public String setTop(int id) {
+      discussPostService.updateType(id, 1);
+  
+      // 触发发帖事件
+      Event event = new Event()
+              .setTopic(TOPIC_PUBLISH)
+              .setUserId(hostHolder.getUser().getId())
+              .setEntityType(ENTITY_TYPE_POST)
+              .setEntityId(id);
+      eventProducer.fireEvent(event);
+  
+      return CommunityUtil.getJSONString(0);
+  }
+  
+  // 加精
+  @RequestMapping(path = "/wonderful", method = RequestMethod.POST)
+  @ResponseBody
+  public String setWonderful(int id) {
+      discussPostService.updateStatus(id, 1);
+  
+      // 触发发帖事件
+      Event event = new Event()
+              .setTopic(TOPIC_PUBLISH)
+              .setUserId(hostHolder.getUser().getId())
+              .setEntityType(ENTITY_TYPE_POST)
+              .setEntityId(id);
+      eventProducer.fireEvent(event);
+  
+      // 计算帖子分数
+      String redisKey = RedisKeyUtil.getPostScoreKey();
+      redisTemplate.opsForSet().add(redisKey, id);
+  
+      return CommunityUtil.getJSONString(0);
+  }
+  
+  // 删除
+  @RequestMapping(path = "/delete", method = RequestMethod.POST)
+  @ResponseBody
+  public String setDelete(int id) {
+      discussPostService.updateStatus(id, 2);
+  
+      // 触发删帖事件
+      Event event = new Event()
+              .setTopic(TOPIC_DELETE)
+              .setUserId(hostHolder.getUser().getId())
+              .setEntityType(ENTITY_TYPE_POST)
+              .setEntityId(id);
+      eventProducer.fireEvent(event);
+  
+      return CommunityUtil.getJSONString(0);
+  }
+  ```
+
+* 在EventConsumer中新增handleDeleteMessage消费删帖事件
+
+  ```java
+  // 消费删帖事件
+  @KafkaListener(topics = {TOPIC_DELETE})
+  public void handleDeleteMessage(ConsumerRecord record) {
+      if (record == null || record.value() == null) {
+          logger.error("消息的内容为空!");
+          return;
+      }
+  
+      Event event = JSONObject.parseObject(record.value().toString(), Event.class);
+      if (event == null) {
+          logger.error("消息格式错误!");
+          return;
+      }
+  
+      elasticsearchService.deleteDiscussPost(event.getEntityId());
+  }
+  ```
+
+* 在security的配置中设置权限，版主可以置顶、加精，管理员可以删帖
+
+  ![image-20221114140457246](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114140457246.png)
+
+
+
+## 10.网站数据统计
+
+![image-20221114141502030](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114141502030.png)
+
+![image-20221114142456669](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114142456669.png)
+
+* 在RedisKeyUtil中创建uvkey、daukey
+
+  ```java
+  // 单日UV
+  public static String getUVKey(String date) {
+      return PREFIX_UV + SPLIT + date;
+  }
+  
+  // 区间UV
+  public static String getUVKey(String startDate, String endDate) {
+      return PREFIX_UV + SPLIT + startDate + SPLIT + endDate;
+  }
+  
+  // 单日活跃用户
+  public static String getDAUKey(String date) {
+      return PREFIX_DAU + SPLIT + date;
+  }
+  
+  // 区间活跃用户
+  public static String getDAUKey(String startDate, String endDate) {
+      return PREFIX_DAU + SPLIT + startDate + SPLIT + endDate;
+  }
+  ```
+
+* 创建DataService，编写相应的统计方法
+
+  ```java
+  @Service
+  public class DataService {
+  
+      @Autowired
+      private RedisTemplate redisTemplate;
+  
+      private SimpleDateFormat df = new SimpleDateFormat("yyyyMMdd");
+  
+      // 将指定的IP计入UV
+      public void recordUV(String ip) {
+          String redisKey = RedisKeyUtil.getUVKey(df.format(new Date()));
+          redisTemplate.opsForHyperLogLog().add(redisKey, ip);
+      }
+  
+      // 统计指定日期范围内的UV
+      public long calculateUV(Date start, Date end) {
+          if (start == null || end == null) {
+              throw new IllegalArgumentException("参数不能为空!");
+          }
+  
+          // 整理该日期范围内的key
+          List<String> keyList = new ArrayList<>();
+          Calendar calendar = Calendar.getInstance();
+          calendar.setTime(start);
+          while (!calendar.getTime().after(end)) {
+              String key = RedisKeyUtil.getUVKey(df.format(calendar.getTime()));
+              keyList.add(key);
+              calendar.add(Calendar.DATE, 1);
+          }
+  
+          // 合并这些数据
+          String redisKey = RedisKeyUtil.getUVKey(df.format(start), df.format(end));
+          redisTemplate.opsForHyperLogLog().union(redisKey, keyList.toArray());
+  
+          // 返回统计的结果
+          return redisTemplate.opsForHyperLogLog().size(redisKey);
+      }
+  
+      // 将指定用户计入DAU
+      public void recordDAU(int userId) {
+          String redisKey = RedisKeyUtil.getDAUKey(df.format(new Date()));
+          redisTemplate.opsForValue().setBit(redisKey, userId, true);
+      }
+  
+      // 统计指定日期范围内的DAU
+      public long calculateDAU(Date start, Date end) {
+          if (start == null || end == null) {
+              throw new IllegalArgumentException("参数不能为空!");
+          }
+  
+          // 整理该日期范围内的key
+          List<byte[]> keyList = new ArrayList<>();
+          Calendar calendar = Calendar.getInstance();
+          calendar.setTime(start);
+          while (!calendar.getTime().after(end)) {
+              String key = RedisKeyUtil.getDAUKey(df.format(calendar.getTime()));
+              keyList.add(key.getBytes());
+              calendar.add(Calendar.DATE, 1);
+          }
+  
+          // 进行OR运算
+          return (long) redisTemplate.execute(new RedisCallback() {
+              @Override
+              public Object doInRedis(RedisConnection connection) throws DataAccessException {
+                  String redisKey = RedisKeyUtil.getDAUKey(df.format(start), df.format(end));
+                  connection.bitOp(RedisStringCommands.BitOperation.OR,
+                          redisKey.getBytes(), keyList.toArray(new byte[0][0]));
+                  return connection.bitCount(redisKey.getBytes());
+              }
+          });
+      }
+  
+  }
+  ```
+
+* 创建DataInterceptor拦截器统计uv和dau，并将该拦截器加入到webmvcconfig中
+
+  ```java
+  @Component
+  public class DataInterceptor implements HandlerInterceptor {
+  
+      @Autowired
+      private DataService dataService;
+  
+      @Autowired
+      private HostHolder hostHolder;
+  
+      @Override
+      public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+          // 统计UV
+          String ip = request.getRemoteHost();
+          dataService.recordUV(ip);
+  
+          // 统计DAU
+          User user = hostHolder.getUser();
+          if (user != null) {
+              dataService.recordDAU(user.getId());
+          }
+  
+          return true;
+      }
+  }
+  ```
+
+* 创建DataController，配置/data路径只有管理员才能访问
+
+  ```java
+  @Controller
+  public class DataController {
+  
+      @Autowired
+      private DataService dataService;
+  
+      // 统计页面
+      @RequestMapping(path = "/data", method = {RequestMethod.GET, RequestMethod.POST})
+      public String getDataPage() {
+          return "/site/admin/data";
+      }
+  
+      // 统计网站UV
+      @RequestMapping(path = "/data/uv", method = RequestMethod.POST)
+      public String getUV(@DateTimeFormat(pattern = "yyyy-MM-dd") Date start,
+                          @DateTimeFormat(pattern = "yyyy-MM-dd") Date end, Model model) {
+          long uv = dataService.calculateUV(start, end);
+          model.addAttribute("uvResult", uv);
+          model.addAttribute("uvStartDate", start);
+          model.addAttribute("uvEndDate", end);
+          return "forward:/data";
+      }
+  
+      // 统计活跃用户
+      @RequestMapping(path = "/data/dau", method = RequestMethod.POST)
+      public String getDAU(@DateTimeFormat(pattern = "yyyy-MM-dd") Date start,
+                           @DateTimeFormat(pattern = "yyyy-MM-dd") Date end, Model model) {
+          long dau = dataService.calculateDAU(start, end);
+          model.addAttribute("dauResult", dau);
+          model.addAttribute("dauStartDate", start);
+          model.addAttribute("dauEndDate", end);
+          return "forward:/data";
+      }
+  
+  }
+  ```
+
+## 11.定时任务
+
+### Quartz基本使用
+
+<img src="https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114150036003.png" alt="image-20221114150036003" style="zoom:50%;" />
+
+![image-20221114150352923](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114150352923.png)
+
+Quartz是要存到数据库里面的，使用Quartz主要是三个组件。1.job：定义一个任务 2.JobDetail：配置Job  3.trigger：触发器，配置运行时间、频率
+
+* 创建Quartz相关的表，有job表、触发器表等
+
+  ![image-20221114151924374](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114151924374.png)
+
+* 创建Quartz包，创建AlphaJob，job组件
+
+  ```java
+  public class AlphaJob implements Job {
+      @Override
+      public void execute(JobExecutionContext context) throws JobExecutionException {
+          System.out.println(Thread.currentThread().getName() + ": execute a quartz job.");
+      }
+  }
+  ```
+
+* 创建QuartzConfig配置JobDetails和Trigger
+
+  ```java
+  // FactoryBean可简化Bean的实例化过程:
+  // 1.通过FactoryBean封装Bean的实例化过程.
+  // 2.将FactoryBean装配到Spring容器里.
+  // 3.将FactoryBean注入给其他的Bean.
+  // 4.该Bean得到的是FactoryBean所管理的对象实例.
+  
+  // 配置JobDetail
+  // @Bean
+  public JobDetailFactoryBean alphaJobDetail() {
+      JobDetailFactoryBean factoryBean = new JobDetailFactoryBean();
+      factoryBean.setJobClass(AlphaJob.class);
+      factoryBean.setName("alphaJob");
+      factoryBean.setGroup("alphaJobGroup");
+      factoryBean.setDurability(true);
+      factoryBean.setRequestsRecovery(true);
+      return factoryBean;
+  }
+  
+  // 配置Trigger(SimpleTriggerFactoryBean, CronTriggerFactoryBean)
+  // @Bean
+  public SimpleTriggerFactoryBean alphaTrigger(JobDetail alphaJobDetail) {
+      SimpleTriggerFactoryBean factoryBean = new SimpleTriggerFactoryBean();
+      factoryBean.setJobDetail(alphaJobDetail);
+      factoryBean.setName("alphaTrigger");
+      factoryBean.setGroup("alphaTriggerGroup");
+      factoryBean.setRepeatInterval(3000);
+      factoryBean.setJobDataMap(new JobDataMap());
+      return factoryBean;
+  }
+  ```
+
+* 配置properties文件，配置后会将任务存入到数据库中
+
+  ```xml
+  # QuartzProperties
+  spring.quartz.job-store-type=jdbc
+  spring.quartz.scheduler-name=communityScheduler
+  spring.quartz.properties.org.quartz.scheduler.instanceId=AUTO
+  spring.quartz.properties.org.quartz.jobStore.class=org.quartz.impl.jdbcjobstore.JobStoreTX
+  spring.quartz.properties.org.quartz.jobStore.driverDelegateClass=org.quartz.impl.jdbcjobstore.StdJDBCDelegate
+  spring.quartz.properties.org.quartz.jobStore.isClustered=true
+  spring.quartz.properties.org.quartz.threadPool.class=org.quartz.simpl.SimpleThreadPool
+  spring.quartz.properties.org.quartz.threadPool.threadCount=5
+  ```
+
+### 热帖排行
+
+![image-20221114154242412](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114154242412.png)
+
+* 在RedisKeyUtil中创建key
+
+  ```java
+  // 帖子分数
+  public static String getPostScoreKey() {
+      return PREFIX_POST + SPLIT + "score";
+  }
+  ```
+
+* 分别在点赞、加精、评论时候，将帖子的id加入到redis中，等待定时任务的处理
+
+  ```java
+  // 计算帖子分数
+  String redisKey = RedisKeyUtil.getPostScoreKey();
+  redisTemplate.opsForSet().add(redisKey, id);
+  ```
+
+* 新建PostScoreRefreshJob（里面是刷新帖子分数的操作）
+
+  ```java
+  public class PostScoreRefreshJob implements Job, CommunityConstant {
+  
+      private static final Logger logger = LoggerFactory.getLogger(PostScoreRefreshJob.class);
+  
+      @Autowired
+      private RedisTemplate redisTemplate;
+  
+      @Autowired
+      private DiscussPostService discussPostService;
+  
+      @Autowired
+      private LikeService likeService;
+  
+      @Autowired
+      private ElasticsearchService elasticsearchService;
+  
+      // 牛客纪元
+      private static final Date epoch;
+  
+      static {
+          try {
+              epoch = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2014-08-01 00:00:00");
+          } catch (ParseException e) {
+              throw new RuntimeException("初始化牛客纪元失败!", e);
+          }
+      }
+  
+      @Override
+      public void execute(JobExecutionContext context) throws JobExecutionException {
+          String redisKey = RedisKeyUtil.getPostScoreKey();
+          BoundSetOperations operations = redisTemplate.boundSetOps(redisKey);
+  
+          if (operations.size() == 0) {
+              logger.info("[任务取消] 没有需要刷新的帖子!");
+              return;
+          }
+  
+          logger.info("[任务开始] 正在刷新帖子分数: " + operations.size());
+          while (operations.size() > 0) {
+              this.refresh((Integer) operations.pop());
+          }
+          logger.info("[任务结束] 帖子分数刷新完毕!");
+      }
+  
+      private void refresh(int postId) {
+          DiscussPost post = discussPostService.findDiscussPostById(postId);
+  
+          if (post == null) {
+              logger.error("该帖子不存在: id = " + postId);
+              return;
+          }
+  
+          // 是否精华
+          boolean wonderful = post.getStatus() == 1;
+          // 评论数量
+          int commentCount = post.getCommentCount();
+          // 点赞数量
+          long likeCount = likeService.findEntityLikeCount(ENTITY_TYPE_POST, postId);
+  
+          // 计算权重
+          double w = (wonderful ? 75 : 0) + commentCount * 10 + likeCount * 2;
+          // 分数 = 帖子权重 + 距离天数
+          double score = Math.log10(Math.max(w, 1))
+                  + (post.getCreateTime().getTime() - epoch.getTime()) / (1000 * 3600 * 24);
+          // 更新帖子分数
+          discussPostService.updateScore(postId, score);
+          // 同步搜索数据
+          post.setScore(score);
+          elasticsearchService.saveDiscussPost(post);
+      }
+  
+  }
+  ```
+
+* 在QuartzConfig中配置JobDetail和Trigger
+
+  ```java
+  // 刷新帖子分数任务
+  @Bean
+  public JobDetailFactoryBean postScoreRefreshJobDetail() {
+      JobDetailFactoryBean factoryBean = new JobDetailFactoryBean();
+      factoryBean.setJobClass(PostScoreRefreshJob.class);
+      factoryBean.setName("postScoreRefreshJob");
+      factoryBean.setGroup("communityJobGroup");
+      factoryBean.setDurability(true);
+      factoryBean.setRequestsRecovery(true);
+      return factoryBean;
+  }
+  
+  @Bean
+  public SimpleTriggerFactoryBean postScoreRefreshTrigger(JobDetail postScoreRefreshJobDetail) {
+      SimpleTriggerFactoryBean factoryBean = new SimpleTriggerFactoryBean();
+      factoryBean.setJobDetail(postScoreRefreshJobDetail);
+      factoryBean.setName("postScoreRefreshTrigger");
+      factoryBean.setGroup("communityTriggerGroup");
+      factoryBean.setRepeatInterval(1000 * 60 * 5);
+      factoryBean.setJobDataMap(new JobDataMap());
+      return factoryBean;
+  }
+  ```
+
+* 重构查看帖子方法，加入一个orderMode参数，0表示按照时间排序，1表示按照热度排序
+* ![image-20221114162143949](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114162143949.png)
+
+## 12.生成长图
+
+![image-20221114162626412](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114162626412.png)
+
+* 安装wk
+
+* 在properties文件中配置
+
+  ```xml
+  # wk
+  wk.image.command=d:/work/wkhtmltopdf/bin/wkhtmltoimage
+  wk.image.storage=d:/work/data/wk-images
+  ```
+
+* 创建WkConfig配置类（在项目初始化的时候就创建wk文件的目录）
+
+  ```java
+  @Configuration
+  public class WkConfig {
+  
+      private static final Logger logger = LoggerFactory.getLogger(WkConfig.class);
+  
+      @Value("${wk.image.storage}")
+      private String wkImageStorage;
+  
+      @PostConstruct
+      public void init() {
+          // 创建WK图片目录
+          File file = new File(wkImageStorage);
+          if (!file.exists()) {
+              file.mkdir();
+              logger.info("创建WK图片目录: " + wkImageStorage);
+          }
+      }
+  
+  }
+  ```
+
+* 在EventConsumer中创建消费分享的事件
+
+  ```java
+  // 消费分享事件
+  @KafkaListener(topics = TOPIC_SHARE)
+  public void handleShareMessage(ConsumerRecord record) {
+      if (record == null || record.value() == null) {
+          logger.error("消息的内容为空!");
+          return;
+      }
+  
+      Event event = JSONObject.parseObject(record.value().toString(), Event.class);
+      if (event == null) {
+          logger.error("消息格式错误!");
+          return;
+      }
+  
+      String htmlUrl = (String) event.getData().get("htmlUrl");
+      String fileName = (String) event.getData().get("fileName");
+      String suffix = (String) event.getData().get("suffix");
+  
+      String cmd = wkImageCommand + " --quality 75 "
+              + htmlUrl + " " + wkImageStorage + "/" + fileName + suffix;
+      try {
+          Runtime.getRuntime().exec(cmd);
+          logger.info("生成长图成功: " + cmd);
+      } catch (IOException e) {
+          logger.error("生成长图失败: " + e.getMessage());
+      }
+  }
+  ```
+
+* 创建ShareController，实现生成长图和获取图片（废弃了，后面利用七牛云）的方法。
+
+  ```java
+  @Controller
+  public class ShareController implements CommunityConstant {
+  
+      private static final Logger logger = LoggerFactory.getLogger(ShareController.class);
+  
+      @Autowired
+      private EventProducer eventProducer;
+  
+      @Value("${community.path.domain}")
+      private String domain;
+  
+      @Value("${server.servlet.context-path}")
+      private String contextPath;
+  
+      @Value("${wk.image.storage}")
+      private String wkImageStorage;
+  
+      @Value("${qiniu.bucket.share.url}")
+      private String shareBucketUrl;
+  
+      @RequestMapping(path = "/share", method = RequestMethod.GET)
+      @ResponseBody
+      public String share(String htmlUrl) {
+          // 文件名
+          String fileName = CommunityUtil.generateUUID();
+  
+          // 异步生成长图
+          Event event = new Event()
+                  .setTopic(TOPIC_SHARE)
+                  .setData("htmlUrl", htmlUrl)
+                  .setData("fileName", fileName)
+                  .setData("suffix", ".png");
+          eventProducer.fireEvent(event);
+  
+          // 返回访问路径
+          Map<String, Object> map = new HashMap<>();
+  //        map.put("shareUrl", domain + contextPath + "/share/image/" + fileName);
+          map.put("shareUrl", shareBucketUrl + "/" + fileName);
+  
+          return CommunityUtil.getJSONString(0, null, map);
+      }
+      
+      // 废弃后续利用七牛云
+      // 获取长图
+      @RequestMapping(path = "/share/image/{fileName}", method = RequestMethod.GET)
+      public void getShareImage(@PathVariable("fileName") String fileName, HttpServletResponse response) {
+          if (StringUtils.isBlank(fileName)) {
+              throw new IllegalArgumentException("文件名不能为空!");
+          }
+  
+          response.setContentType("image/png");
+          File file = new File(wkImageStorage + "/" + fileName + ".png");
+          try {
+              OutputStream os = response.getOutputStream();
+              FileInputStream fis = new FileInputStream(file);
+              byte[] buffer = new byte[1024];
+              int b = 0;
+              while ((b = fis.read(buffer)) != -1) {
+                  os.write(buffer, 0, b);
+              }
+          } catch (IOException e) {
+              logger.error("获取长图失败: " + e.getMessage());
+          }
+      }
+  }
+  ```
+
+## 13.将文件上传到云服务器
+
+![image-20221114165312419](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114165312419.png)
+
+* 在properties文件中添加配置
+
+  ```xml
+  # qiniu
+  qiniu.key.access=LniTyd17oFvp_Sa6oY96fPXwMV9-8cMnH0-_JS_M
+  qiniu.key.secret=Famwup60RHwU2n_ZS_hbqMJLWk8LfMvwexpFPCA
+  qiniu.bucket.header.name=miyukiheader
+  quniu.bucket.header.url=http://header.miyuki.ink
+  qiniu.bucket.share.name=miyukishare
+  qiniu.bucket.share.url=http://share.miyuki.ink
+  ```
+
+* 在UserController中注入相应的属性
+
+  ![image-20221114180305648](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114180305648.png)
+
+
+
+* 废弃以前的上传图片和获得图片的方法
+
+* 重写getSetting方法，每次上传都要有凭证
+
+  ```java
+  @LoginRequired
+  @RequestMapping(path = "/setting", method = RequestMethod.GET)
+  public String getSettingPage(Model model) {
+      // 上传文件名称
+      String fileName = CommunityUtil.generateUUID();
+      // 设置响应信息
+      StringMap policy = new StringMap();
+      policy.put("returnBody", CommunityUtil.getJSONString(0));
+      // 生成上传凭证
+      Auth auth = Auth.create(accessKey, secretKey);
+      String uploadToken = auth.uploadToken(headerBucketName, fileName, 3600, policy);
+  
+      model.addAttribute("uploadToken", uploadToken);
+      model.addAttribute("fileName", fileName);
+  
+      return "/site/setting";
+  }
+  ```
+
+* 重写updateHeader方法
+
+  ```java
+  // 更新头像路径
+  @RequestMapping(path = "/header/url", method = RequestMethod.POST)
+  @ResponseBody
+  public String updateHeaderUrl(String fileName) {
+      if (StringUtils.isBlank(fileName)) {
+          return CommunityUtil.getJSONString(1, "文件名不能为空!");
+      }
+  
+      String url = headerBucketUrl + "/" + fileName;
+      userService.updateHeader(hostHolder.getUser().getId(), url);
+  
+      return CommunityUtil.getJSONString(0);
+  }
+  ```
+
+* 通过前端js上传图片，这是客户端上传
+
+  ![image-20221114181211264](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114181211264.png)
+
+* 在ShareController中是从服务端传图片到七牛云
+
+  ![image-20221114181524309](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114181524309.png)
+
+* 废弃从本地获得图片
+
+* 在EventConsumer的消费分享方法中，新增异步定时器监视文件，传输文件到七牛云
+
+  ![image-20221114182503255](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114182503255.png)
+
+  下面这个方法很精彩，将future设置到线程中，如果超时会去取消任务，如果次数超过3次也会取消任务，调用future.cancle()。
+
+  ```java
+  class UploadTask implements Runnable {
+  
+      // 文件名称
+      private String fileName;
+      // 文件后缀
+      private String suffix;
+      // 启动任务的返回值
+      private Future future;
+      // 开始时间
+      private long startTime;
+      // 上传次数
+      private int uploadTimes;
+  
+      public UploadTask(String fileName, String suffix) {
+          this.fileName = fileName;
+          this.suffix = suffix;
+          this.startTime = System.currentTimeMillis();
+      }
+  
+      public void setFuture(Future future) {
+          this.future = future;
+      }
+  
+      @Override
+      public void run() {
+          // 生成失败
+          if (System.currentTimeMillis() - startTime > 30000) {
+              logger.error("执行时间过长,终止任务:" + fileName);
+              future.cancel(true);
+              return;
+          }
+          // 上传失败
+          if (uploadTimes >= 3) {
+              logger.error("上传次数过多,终止任务:" + fileName);
+              future.cancel(true);
+              return;
+          }
+  
+          String path = wkImageStorage + "/" + fileName + suffix;
+          File file = new File(path);
+          if (file.exists()) {
+              logger.info(String.format("开始第%d次上传[%s].", ++uploadTimes, fileName));
+              // 设置响应信息
+              StringMap policy = new StringMap();
+              policy.put("returnBody", CommunityUtil.getJSONString(0));
+              // 生成上传凭证
+              Auth auth = Auth.create(accessKey, secretKey);
+              String uploadToken = auth.uploadToken(shareBucketName, fileName, 3600, policy);
+              // 指定上传机房
+              UploadManager manager = new UploadManager(new Configuration(Zone.zone1()));
+              try {
+                  // 开始上传图片
+                  Response response = manager.put(
+                          path, fileName, uploadToken, null, "image/" + suffix, false);
+                  // 处理响应结果
+                  JSONObject json = JSONObject.parseObject(response.bodyString());
+                  if (json == null || json.get("code") == null || !json.get("code").toString().equals("0")) {
+                      logger.info(String.format("第%d次上传失败[%s].", uploadTimes, fileName));
+                  } else {
+                      logger.info(String.format("第%d次上传成功[%s].", uploadTimes, fileName));
+                      future.cancel(true);
+                  }
+              } catch (QiniuException e) {
+                  logger.info(String.format("第%d次上传失败[%s].", uploadTimes, fileName));
+              }
+          } else {
+              logger.info("等待图片生成[" + fileName + "].");
+          }
+      }
+  }
+  ```
+
+## 14.优化网站性能
+
+![image-20221114183847718](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114183847718.png)
+
+![image-20221114190249998](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114190249998.png)
+
+### caffeine缓存
+
+使用的是Caffeine中LoadingCache（同步缓存），即多个线程线程访问缓存时，若缓存没有对应的数据，只允许一个线程去数据库中取数据，其他线程则排队等候。由于LoadingCache是线程同步的，所以即使Caffeine中的缓存同时失效了，有大量请求访问热点帖子的时候，它也不会出现缓存雪崩的问题。因此认为对于缓存热点帖子这一功能而言，应该只需要用Caffeine做缓存就足够了，可以不使用Redis作二级缓存，毕竟热点贴的更新频率慢。如果有其他合适的需求，可以再考虑使用多级缓存的策略。
+
+* 配置properties文件
+
+  ```
+  # caffeine 缓存15条数据
+  caffeine.posts.max-size=15
+  caffeine.posts.expire-seconds=180
+  ```
+
+* 使用caffenine优化DiscussPostService，缓存按热度排序的帖子15条（可以根据分页条件查询，最多缓存15条），缓存帖子总数。
+
+  ```java
+  @Value("${caffeine.posts.max-size}")
+  private int maxSize;
+  
+  @Value("${caffeine.posts.expire-seconds}")
+  private int expireSeconds;
+  
+  // Caffeine核心接口: Cache, LoadingCache(没有从数据库查), AsyncLoadingCache（异步查数据库）
+  
+  // 帖子列表缓存
+  private LoadingCache<String, List<DiscussPost>> postListCache;
+  
+  // 帖子总数缓存
+  private LoadingCache<Integer, Integer> postRowsCache;
+  
+  @PostConstruct
+  public void init() {
+      // 初始化帖子列表缓存
+      postListCache = Caffeine.newBuilder()
+              .maximumSize(maxSize)
+              .expireAfterWrite(expireSeconds, TimeUnit.SECONDS)
+              .build(new CacheLoader<String, List<DiscussPost>>() {
+                  @Nullable
+                  @Override
+                  public List<DiscussPost> load(@NonNull String key) throws Exception {
+                      if (key == null || key.length() == 0) {
+                          throw new IllegalArgumentException("参数错误!");
+                      }
+  
+                      String[] params = key.split(":");
+                      if (params == null || params.length != 2) {
+                          throw new IllegalArgumentException("参数错误!");
+                      }
+  
+                      int offset = Integer.valueOf(params[0]);
+                      int limit = Integer.valueOf(params[1]);
+  
+                      // 二级缓存: Redis -> mysql
+  
+                      logger.debug("load post list from DB.");
+                      return discussPostMapper.selectDiscussPosts(0, offset, limit, 1);
+                  }
+              });
+      // 初始化帖子总数缓存
+      postRowsCache = Caffeine.newBuilder()
+              .maximumSize(maxSize)
+              .expireAfterWrite(expireSeconds, TimeUnit.SECONDS)
+              .build(new CacheLoader<Integer, Integer>() {
+                  @Nullable
+                  @Override
+                  public Integer load(@NonNull Integer key) throws Exception {
+                      logger.debug("load post rows from DB.");
+                      return discussPostMapper.selectDiscussPostRows(key);
+                  }
+              });
+  }
+  ```
+
+* 改造findDiscussPost方法，userid = 0说明访问首页，并且选择热度排序，就从caffeine缓存中取出数据，userid不为0是查询某个用户的帖子。
+
+  ```java
+  public List<DiscussPost> findDiscussPosts(int userId, int offset, int limit, int orderMode) {
+      if (userId == 0 && orderMode == 1) {
+          return postListCache.get(offset + ":" + limit);
+      }
+  
+      logger.debug("load post list from DB.");
+      return discussPostMapper.selectDiscussPosts(userId, offset, limit, orderMode);
+  }
+  ```
+
+* 改造findDiscussPostRows方法，从缓存中拿出来总的贴子数，方便分页。
+
+  ```java
+  public int findDiscussPostRows(int userId) {
+      if (userId == 0) {
+          return postRowsCache.get(userId);
+      }
+  
+      logger.debug("load post rows from DB.");
+      return discussPostMapper.selectDiscussPostRows(userId);
+  }
+  ```
+
+* 使用Jmeter进行压测
+
+  ![image-20221114200250584](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200250584.png)
+
+  ![image-20221114200412508](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200412508.png)
+
+  ![image-20221114200432378](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200432378.png)
+
+  ![image-20221114200518278](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200518278.png)
+
+  ![image-20221114200543458](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200543458.png)
+
+  ![image-20221114200622778](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200622778.png)
+
+  ![image-20221114200656561](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200656561.png)
+
+  **关注吞吐量**
+
+  ![image-20221114200746403](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200746403.png)
+
+  * 不加入caffeine缓存吞吐量仅为每秒10个左右
+
+    ![image-20221114200920185](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114200920185.png)
+
+  * 加入caffeine缓存吞吐量达到190是之前的接近20倍
+
+    ![image-20221114201112200](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114201112200.png)
+
+## 15.项目监控
+
+![image-20221114205721044](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114205721044.png)
+
+结果是json格式的数据，可以查看各种各样的信息，如bean信息等
+
+![image-20221114210135052](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114210135052.png)
+
+* 配置xml文件（一共有20多个断电可以配置，访问路径就是/community/actuator/health (caches等等)）
+
+  ```xml
+  # actuator
+  management.endpoints.web.exposure.include=*
+  management.endpoints.web.exposure.exclude=info,caches
+  ```
+
+* 示例（/community/actuator/database即可访问）
+
+  ```java
+  @Component
+  @Endpoint(id = "database")
+  public class DatabaseEndpoint {
+  
+      private static final Logger logger = LoggerFactory.getLogger(DatabaseEndpoint.class);
+  
+      @Autowired
+      private DataSource dataSource;
+  
+      @ReadOperation
+      public String checkConnection() {
+          try (
+                  Connection conn = dataSource.getConnection();
+          ) {
+              return CommunityUtil.getJSONString(0, "获取连接成功!");
+          } catch (SQLException e) {
+              logger.error("获取连接失败:" + e.getMessage());
+              return CommunityUtil.getJSONString(1, "获取连接失败!");
+          }
+      }
+  
+  }
+  ```
+
+* 只有管理员可以访问
+
+  ![image-20221114210100128](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114210100128.png)
+
+## 16.项目部署
+
+
+
 ## 项目优化
 
 1. 将验证码从session移入到redis中，使用cookie，传给客户端。
@@ -3263,4 +4553,17 @@ public List<Message> findNotices(int userId, String topic, int offset, int limit
 
 5. es中存储帖子，通过es提供的方法可以高亮关键字可以看上面的代码，es极大的优化了搜索效率。
 
-6. 将头像存在七牛云而不是本地
+6. SpringSecurity改造，使用Spring+jwt的方法替代ticket（就是将ticket变成jwt，更加实用安全了，毕竟jwt是很多人在用的工具了，而ticket是我们自己生成的随机字符串而已），还有就是SpringSecurity配置的更加彻底，之前项目中是取巧的，只是用了自己实现的HostHolder，存放用户（user），改造了LoginTicketInterceptor这个类在之中手动添加了Authentication对象保存到SecurityContext中，没有真正的实现一个AuthenticationProvider来实现认证的逻辑，相当于不是在Filter中实现的登录认证，没有用到SpringSecurity而是在Interceptor中自行实现的，后续改进了，使得SpringSecurity使用的更完整了。项目中权限设计也十分简陋，只有3中角色，后续能进行更细的权限分配。
+
+   <img src="https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221113211550019.png" alt="image-20221113211550019" style="zoom:50%;" />
+
+7. 使用Quartz结合redis（每次评论、点赞、加精帖子都会存放一条redis数据，使用了set集合类型，存放了所有有变动的帖子id）进行定时统计帖子的分数，公式的原则就是时间越长分数越低，点赞、评论越多分数越高。
+
+8. 使用定时任务线程池（ThreadPoolTaskScheduler），在EventConsumer的消费分享方法中，新增异步定时器监视文件，传输文件到七牛云
+
+   ![image-20221114182503255](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221114182503255.png)
+
+   下面这个方法很精彩，将future设置到线程中，如果超时会去取消任务，如果次数超过3次也会取消任务，调用future.cancle()。
+
+9. 将头像存在七牛云而不是本地
+
