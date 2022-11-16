@@ -1,4 +1,6 @@
-1.数据库表
+## 1.系统架构及数据库表设计
+
+![image-20221115232156362](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221115232156362.png)
 
 #### 用户表 user
 
@@ -103,10 +105,6 @@
   ![image-20221109154618164](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221109154618164.png)
 
   ![image-20221109154659631](https://cdn.jsdelivr.net/gh/Miyuki7/image-host/blog-imgimage-20221109154659631.png)
-
-作者：是瑶瑶公主呀
-链接：https://www.nowcoder.com/discuss/481089?type=5
-来源：牛客网
 
 
 
@@ -346,10 +344,6 @@ public class Page {
 
 </configuration>
 ```
-
-作者：是瑶瑶公主呀
-链接：https://www.nowcoder.com/discuss/481089?type=5
-来源：牛客网
 
 
 
@@ -1308,12 +1302,6 @@ public class LoginRequiredInterceptor implements HandlerInterceptor {
 
 
 在 WebMvcConfig 配置类配置 LoginRequiredInterceptor，拦截除了静态资源之外的所有路径。
-
-作者：是瑶瑶公主呀
-链接：https://www.nowcoder.com/discuss/481089?type=5
-来源：牛客网
-
-
 
 ## 5.开发核心功能
 
